@@ -14,6 +14,9 @@ them up: do not change remote URLs, do not switch between SSH and HTTPS, do not 
   list) and never forces. Do not call `git push`, `gh pr create` or `glab mr create`
   directly for this: they prompt. A refusal from deliver.sh is final: tell the developer,
   never look for another way.
+- `deliver.sh push`, `mr` and `commit` run git with hooks and fsmonitor disabled: they are
+  code the project, or a worker that changed it, controls, and they would run on the host
+  with the developer's rights.
 - Never create a branch, a commit or a file on the forge another way (the API, an MCP
   connector): the result has other commit ids than the local branch and the two diverge.
 - When a fetch, a push or a `gh`/`glab` call fails, stop and show the developer the error.

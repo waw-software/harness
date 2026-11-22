@@ -372,7 +372,7 @@ if [ "$input" = diff ]; then
   # with a secret-like name or a line break in its name is not sent: it is left out of the
   # diff and of the file contents, and only counted. No rename detection: each section of
   # the diff is one name of $tmp/tracked, in the same order.
-  git diff --no-renames --name-only -z "$mb" >"$tmp/tracked.z"
+  git diff --no-ext-diff --no-textconv --no-renames --name-only -z "$mb" >"$tmp/tracked.z"
   git ls-files --others --exclude-standard -z >"$tmp/untracked.z"
   excluded=()
   for list in tracked untracked; do
@@ -385,7 +385,7 @@ if [ "$input" = diff ]; then
       [ "$list" = untracked ] || excluded+=(":(top,exclude,literal)$f")
     done <"$tmp/$list.z"
   done
-  git diff --no-renames "$mb" -- ':(top)' ${excluded[@]+"${excluded[@]}"} >"$tmp/diff"
+  git diff --no-ext-diff --no-textconv --no-renames "$mb" -- ':(top)' ${excluded[@]+"${excluded[@]}"} >"$tmp/diff"
   cat "$tmp/tracked" "$tmp/untracked" >"$tmp/files"
   if [ ! -s "$tmp/files" ]; then
     if [ "$not_sent" = 0 ]; then
@@ -436,7 +436,7 @@ awk '!seen[$0]++' "$tmp/omitted" >"$tmp/omitted.list"
 # codex_diff_cmd: the git command for the whole change, with the exclusions of the diff above.
 codex_diff_cmd() {
   local e
-  printf 'git diff --no-renames %s --' "$mb"
+  printf 'git diff --no-ext-diff --no-textconv --no-renames %s --' "$mb"
   for e in ':(top)' ${excluded[@]+"${excluded[@]}"}; do printf ' %q' "$e"; done
 }
 
@@ -459,7 +459,7 @@ emit_omitted() {
     codex)
       if [ "$changes" = 1 ]; then
         # shellcheck disable=SC2016 # the backticks are Markdown
-        printf 'The change is `%s` (merge base %s to the working tree, HEAD %s). Read the omitted files and their diff (`git diff --no-renames %s -- <file>`) in the repository before you answer.\n' \
+        printf 'The change is `%s` (merge base %s to the working tree, HEAD %s). Read the omitted files and their diff (`git diff --no-ext-diff --no-textconv --no-renames %s -- <file>`) in the repository before you answer.\n' \
           "$(codex_diff_cmd)" "$mb" "$head_sha" "$mb"
       fi
       [ ! -s "$tmp/cut.docs" ] || printf 'Read the rest of each cut document at its path before you answer.\n'

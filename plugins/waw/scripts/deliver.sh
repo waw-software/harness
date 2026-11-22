@@ -18,6 +18,11 @@
 #       never retried with force. Refused with 3: a detached HEAD, no origin upstream (use
 #       deliver.sh push first), a tracking mismatch, a missing origin/<branch>, a protected
 #       branch. Anything else after push: usage, 2.
+#   deliver.sh commit --message-file <file> <path>...
+#       Stage the named paths (git add -- <path>...) and commit them with the message from
+#       <file>, on the current branch only when it is not protected (as push). At least one
+#       path is required; nothing else is staged. Hooks and fsmonitor are off, as for push.
+#       Prints "deliver: commit <short sha> <subject>". Git failing: 1.
 #   deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>]
 #                 [--label <label>]...
 #       Push (as above), then open the merge request from the current branch into --target
@@ -32,7 +37,7 @@ die() {
   printf 'deliver.sh: %s\n' "$2" >&2
   exit "$1"
 }
-usage() { die 2 "usage: deliver.sh push [--force-with-lease] | deliver.sh mr --title <t> --description-file <f> [--draft] [--target <b>] [--label <l>]..."; }
+usage() { die 2 "usage: deliver.sh push [--force-with-lease] | deliver.sh commit --message-file <f> <path>... | deliver.sh mr --title <t> --description-file <f> [--draft] [--target <b>] [--label <l>]..."; }
 
 [ $# -ge 1 ] || usage
 cmd=$1
@@ -84,10 +89,14 @@ check_branch() {
   done < <(protected_patterns | sort -u)
 }
 
+# Every push and commit runs with Git hooks and fsmonitor off: they are code the project (or
+# a worker that changed it) controls, and this script runs on the host with the developer's rights.
+git_nohooks() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+
 do_push() {
   check_branch
   echo "deliver: git push -u origin $branch"
-  git push -u origin "$branch" || die 1 "push failed (a rejected non-fast-forward push is never forced: fetch, rebase or merge first, or ask the developer)"
+  git_nohooks push -u origin "$branch" || die 1 "push failed (a rejected non-fast-forward push is never forced: fetch, rebase or merge first, or ask the developer)"
 }
 
 do_push_lease() {
@@ -102,7 +111,7 @@ do_push_lease() {
     die 3 "$branch has no origin/$branch to lease: use deliver.sh push first"
   check_branch
   echo "deliver: git push --force-with-lease=$branch:$expected origin HEAD:refs/heads/$branch"
-  git push "--force-with-lease=$branch:$expected" origin "HEAD:refs/heads/$branch" ||
+  git_nohooks push "--force-with-lease=$branch:$expected" origin "HEAD:refs/heads/$branch" ||
     die 1 "lease push failed: origin/$branch has commits since the last fetch: fetch, inspect, rebase or merge first; never retried with force"
 }
 
@@ -160,6 +169,20 @@ case $cmd in
       for l in ${labels[@]+"${labels[@]}"}; do a+=(--label "$l"); done
       gh "${a[@]}" || die 1 "gh pr create failed"
     fi
+    ;;
+  commit)
+    msgfile=""
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --message-file) [ $# -ge 2 ] || usage; msgfile=$2; shift 2; break ;;
+        *) usage ;;
+      esac
+    done
+    [ -n "$msgfile" ] && [ -r "$msgfile" ] && [ $# -ge 1 ] || usage
+    check_branch
+    git_nohooks add -- "$@" || die 1 "git add failed"
+    git_nohooks commit -F "$msgfile" || die 1 "git commit failed"
+    echo "deliver: commit $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
     ;;
   *) usage ;;
 esac
