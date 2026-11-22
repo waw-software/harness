@@ -55,22 +55,61 @@ inside() {
   [ "$p" = "$d" ] || case $p in "$d"/*) return 0 ;; *) return 1 ;; esac
 }
 
+# inside_physical <path> <root>: the physical target of the path (symlinks followed, also in
+# parents of a file that does not exist yet) is the root's physical path or under it. A `..`
+# component, a leading `~`, a dangling link, a loop or any error: not inside.
+inside_physical() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -I -c '
+import os, sys
+path, root, cwd = sys.argv[1:4]
+try:
+    if path.startswith("~"):
+        sys.exit(1)
+    if not path.startswith("/"):
+        path = cwd + "/" + path
+    if ".." in path.split("/"):
+        sys.exit(1)
+    root = os.path.realpath(root, strict=True)
+    cur = os.path.normpath(path)
+    suffix = []
+    while True:
+        try:
+            os.lstat(cur)
+            break
+        except FileNotFoundError:
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                sys.exit(1)
+            suffix.insert(0, os.path.basename(cur))
+            cur = parent
+    resolved = os.path.realpath(cur, strict=True)
+    if suffix:
+        if not os.path.isdir(resolved):
+            sys.exit(1)
+        resolved = os.path.join(resolved, *suffix)
+    sys.exit(0 if os.path.commonpath([root, resolved]) == root else 1)
+except Exception:
+    sys.exit(1)
+' "$1" "$2" "$PWD" 2>/dev/null
+}
+
 # ------------------------------------------------------------------ file tools
 
 case $tool in
   Edit | Write | NotebookEdit | MultiEdit)
     file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null)
-    [ -n "$file" ] || exit 0
     [ -n "$scope" ] || exit 0
+    [ -n "$file" ] || block "a file tool call without a path" "Give the file path; it must be inside $scope."
     case $AGENT_ROLE in
       investigator | tester | reviewer)
-        if inside "$file" "$scope/.ship" || { [ -n "${AGENT_RUN_DIR:-}" ] && inside "$file" "$AGENT_RUN_DIR"; }; then
+        if inside_physical "$file" "$scope/.ship" || { [ -n "${AGENT_RUN_DIR:-}" ] && inside_physical "$file" "$AGENT_RUN_DIR"; }; then
           exit 0
         fi
         block "a write to $file" "A $AGENT_ROLE writes only run files under $scope/.ship/ (notes, drafts, evidence)."
         ;;
       *)
-        inside "$file" "$scope" && exit 0
+        inside_physical "$file" "$scope" && exit 0
         block "a write to $file" "Write only inside the task's working directory $scope, and only the files your brief gives you."
         ;;
     esac
@@ -84,9 +123,58 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null) || e
 
 # ------------------------------------------------------------------ commands
 
-# One command per line: split on ; & | ( ) { } ` and newlines. Quoted text stays inside its
-# segment, so `echo "git push"` is a segment that starts with echo.
-segments=$(printf '%s\n' "$cmd" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
+# One command per line: split on ; & | ( ) { } ` and newlines, but only outside single quotes,
+# double quotes and after a backslash; a # that starts a word outside quotes drops the rest
+# of its line. Quoted text stays inside its segment, so `echo "git push"` is one segment that
+# starts with echo.
+split_commands() {
+  python3 -I -c '
+import sys
+t = sys.argv[1]
+out, cur = [], []
+q = None
+i, n = 0, len(t)
+while i < n:
+    c = t[i]
+    if q == "\x27":
+        cur.append(c)
+        if c == q:
+            q = None
+    elif q == "\"":
+        if c == "`" or (c == "$" and t[i + 1:i + 2] == "("):
+            out.append("".join(cur))
+            cur = []
+            i += 2 if c == "$" else 1
+            continue
+        cur.append(c)
+        if c == "\\" and i + 1 < n:
+            i += 1
+            cur.append(t[i])
+        elif c == q:
+            q = None
+    elif c == "\\" and i + 1 < n:
+        cur.append(c)
+        i += 1
+        cur.append(t[i])
+    elif c in "\x27\"":
+        q = c
+        cur.append(c)
+    elif c == "#" and (i == 0 or t[i - 1] in " \t\n"):
+        while i < n and t[i] != "\n":
+            i += 1
+        continue
+    elif c in ";&|(){}`\n":
+        out.append("".join(cur))
+        cur = []
+    else:
+        cur.append(c)
+    i += 1
+out.append("".join(cur))
+print("\n".join(s.replace("\n", " ") for s in out))
+' "$1"
+}
+segments=$(split_commands "$cmd" 2>/dev/null) ||
+  segments=$(printf '%s\n' "$cmd" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
 
 check_segment() {
   local s=$1 w1 w2 w3 first n
@@ -108,6 +196,7 @@ check_segment() {
   # shellcheck disable=SC2086
   set -- $s
   w1=${1:-} w2=${2:-} w3=${3:-}
+  w1=${w1//[\"\']/}
   w1=${w1##*/}
   [ -n "$w1" ] || return 0
 
