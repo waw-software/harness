@@ -189,6 +189,12 @@ case_proxy_credentials() {
   HTTPS_PROXY=http://u:p@proxy:3128 HTTP_PROXY=http://proxy:3128 assert_exit 0 run_worker sb-proxy developer "$ROOT/proxy"
   ! grep -q '^HTTPS_PROXY=' "$f" || fail "a proxy value with credentials was passed by default"
   grep -q '^HTTP_PROXY=http://proxy:3128$' "$f" || fail "a proxy value without credentials was not passed"
+  HTTPS_PROXY=u:p@proxy:3128 NO_PROXY=localhost,.example.test HTTP_PROXY=http://proxy:3128/path@x \
+    assert_exit 0 run_worker sb-proxy3 developer "$ROOT/proxy3"
+  f=$TEST_ROOT/claude-env-sb-proxy3.log
+  ! grep -q '^HTTPS_PROXY=' "$f" || fail "a schemeless proxy value with credentials was passed by default"
+  grep -q '^NO_PROXY=localhost,.example.test$' "$f" || fail "NO_PROXY without @ was not passed"
+  grep -q '^HTTP_PROXY=http://proxy:3128/path@x$' "$f" || fail "an @ after the host was taken for credentials"
   f=$TEST_ROOT/claude-env-sb-proxy2.log
   HTTPS_PROXY=http://u:p@proxy:3128 AGENT_WORKER_ENV="$AGENT_WORKER_ENV HTTPS_PROXY" assert_exit 0 run_worker sb-proxy2 developer "$ROOT/proxy2"
   grep -q '^HTTPS_PROXY=http://u:p@proxy:3128$' "$f" || fail "a proxy named in AGENT_WORKER_ENV was not passed"

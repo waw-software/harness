@@ -1185,18 +1185,24 @@ while :; do
     # of AGENT_WORKER_ENV, and the values computed here. The route's settings.json is the only
     # source of the endpoint and the key: nothing the commander's environment holds (a
     # gateway URL, API keys, forge tokens, cloud credentials) reaches the worker or its Bash.
-    worker_env=()
+    worker_env=() seen_names=""
     IFS=' ' read -r -a extra_names <<<"$WORKER_ENV_NAMES" || true
     for v in HOME USER LOGNAME SHELL PATH TMPDIR LANG LC_ALL LC_CTYPE LC_MESSAGES TERM TZ \
       __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME \
       HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy \
       NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR ${extra_names[@]+"${extra_names[@]}"}; do
       [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      case " $seen_names " in *" $v "*) continue ;; esac
+      seen_names="$seen_names $v"
       if [ -z "${!v+x}" ]; then continue; fi
-      # a proxy URL with credentials (scheme://user:pass@host) passes only when AGENT_WORKER_ENV names it
+      # A proxy value with credentials (user:pass@host, with or without a scheme) passes only
+      # when AGENT_WORKER_ENV names it.
       case $v in
         HTTP_PROXY | HTTPS_PROXY | ALL_PROXY | http_proxy | https_proxy | all_proxy)
-          if [[ ${!v} =~ ://[^/@]*@ ]] && ! [[ " ${extra_names[*]:-} " == *" $v "* ]]; then continue; fi
+          pv=${!v}
+          if [[ $pv =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then pv=${pv#"${BASH_REMATCH[0]}"}; fi
+          pv=${pv%%/*}
+          if [[ $pv == *@* ]] && ! [[ " ${extra_names[*]:-} " == *" $v "* ]]; then continue; fi
           ;;
       esac
       worker_env+=("$v=${!v}")
