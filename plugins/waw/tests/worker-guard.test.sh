@@ -149,6 +149,24 @@ case_project_settings_blocked() {
   T_GRANTS=.claude/settings.json dev Write "$SCOPE/.claude/settings.json" 0
   T_GRANTS=.claude/settings.json dev Write "$SCOPE/.mcp.json" 2
 }
+case_python_failure_blocks() {
+  mkdir -p "$W/badpy"
+  printf '#!/bin/sh\nexit 1\n' >"$W/badpy/python3"
+  chmod +x "$W/badpy/python3"
+  PATH=$W/badpy:$PATH run_bash 'ls'; assert_eq "$hrc" 2 "ls without python"
+  grep -q python3 "$W/err"; assert_eq "$?" 0 "reason names python3 (ls)"
+  PATH=$W/badpy:$PATH run_bash 'X="a b" deliver.sh push'; assert_eq "$hrc" 2 "assignment without python"
+  grep -q python3 "$W/err"; assert_eq "$?" 0 "reason names python3 (assignment)"
+}
+case_unreadable_heredoc_blocks() {
+  if TMPDIR=$W/no-such-dir bash -c 'cat <<EOF >/dev/null
+x
+EOF' 2>/dev/null; then
+    printf 'case_unreadable_heredoc_blocks: skipped, this bash does not use TMPDIR for here-documents\n'
+    return 0
+  fi
+  TMPDIR=$W/no-such-dir run_bash 'ls'; assert_eq "$hrc" 2 "ls with an unwritable TMPDIR"
+}
 case_existing_git_rules_kept() {
   run_bash 'git push'; assert_eq "$hrc" 2 "git push"
 }
@@ -175,5 +193,7 @@ case_python39_compatible
 case_ship_symlink_out
 case_run_dir_redirected
 case_project_settings_blocked
+case_python_failure_blocks
+case_unreadable_heredoc_blocks
 case_existing_git_rules_kept
 printf 'worker-guard.test.sh: all cases passed\n'
