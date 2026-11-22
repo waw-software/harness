@@ -133,7 +133,7 @@ command -v jq >/dev/null 2>&1 || die 3 "jq not found"
 
 # ------------------------------------------------------------------ config
 
-CFG_NEXOS_CONFIG_DIR="" CFG_WORKER_ROUTE=""
+CFG_NEXOS_CONFIG_DIR="" CFG_WORKER_ROUTE="" CFG_AGENT_WORKER_ENV=""
 CFG_AGENT_INVESTIGATOR_MODEL="" CFG_AGENT_DEVELOPER_MODEL="" CFG_AGENT_REVIEWER_MODEL="" CFG_AGENT_TESTER_MODEL=""
 CFG_AGENT_INVESTIGATOR_ROUTE="" CFG_AGENT_DEVELOPER_ROUTE="" CFG_AGENT_REVIEWER_ROUTE="" CFG_AGENT_TESTER_ROUTE=""
 for _r in INVESTIGATOR DEVELOPER REVIEWER TESTER; do
@@ -149,13 +149,16 @@ fi
 if [ -f "$cfg" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
-    if [[ $line =~ ^[[:space:]]*(NEXOS_CONFIG_DIR|WORKER_ROUTE|AGENT_(INVESTIGATOR|DEVELOPER|REVIEWER|TESTER)_(MODEL|ROUTE|FALLBACK_ROUTE|FALLBACK_MODEL|EFFORT))=\"([^\"]*)\"[[:space:]]*$ ]]; then
+    if [[ $line =~ ^[[:space:]]*(NEXOS_CONFIG_DIR|WORKER_ROUTE|AGENT_WORKER_ENV|AGENT_(INVESTIGATOR|DEVELOPER|REVIEWER|TESTER)_(MODEL|ROUTE|FALLBACK_ROUTE|FALLBACK_MODEL|EFFORT))=\"([^\"]*)\"[[:space:]]*$ ]]; then
       # shellcheck disable=SC2034 # read by the eval
       val=${BASH_REMATCH[4]}
       eval "CFG_${BASH_REMATCH[1]}=\$val"
     fi
   done <"$cfg"
 fi
+# AGENT_WORKER_ENV: names of extra variables a worker's CLI inherits (a work proxy's token, a
+# test's settings); the environment variable of the same name wins over the config's.
+WORKER_ENV_NAMES=${AGENT_WORKER_ENV:-$CFG_AGENT_WORKER_ENV}
 
 model_of() {
   case $1 in
@@ -296,19 +299,59 @@ tilde() { case $1 in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' 
 # What a worker never reads: keys, tokens, the route configs (gateway URLs, key helpers, logins),
 # the other agents' logins. Denied to its Bash (the sandbox) and to its Read tool (permission
 # rules: the sandbox does not cover file tools). Of a route dir only its secret files: the
-# worker's own Claude Code reads the rest of its dir (shell snapshots). Paths with spaces are
-# left out (the list is split on white space).
-SECRET_PATHS="~/.ssh ~/Library/Keychains ~/.claude-nexos/settings.json ~/.claude-nexos/.claude.json
-~/.claude.json ~/.config/gh ~/.config/glab-cli ~/.aws ~/.netrc ~/.docker/config.json ~/.npmrc
-~/.codex/auth.json ~/.local/share/opencode/auth.json"
+# worker's own Claude Code reads the rest of its dir (shell snapshots). An array: a path with
+# spaces stays one entry. The commander's own list, $WAW_HOME/read-deny, is added at launch
+# (read_deny_extra).
+SECRET_PATHS=("~/.ssh" "~/Library/Keychains" "~/.claude-nexos/settings.json" "~/.claude-nexos/.claude.json"
+  "~/.claude.json" "~/.config/gh" "~/.config/glab-cli" "~/.aws" "~/.netrc" "~/.docker/config.json" "~/.npmrc"
+  "~/.codex/auth.json" "~/.local/share/opencode/auth.json"
+  "~/.gnupg" "~/.kube" "~/.config/gcloud" "~/.azure" "~/.config/azure" "~/.config/doctl" "~/.oci"
+  "~/.zsh_history" "~/.bash_history" "~/.sh_history" "~/.zhistory" "~/.zsh_sessions" "~/.bash_sessions"
+  "~/.local/share/fish/fish_history"
+  "~/Library/Application Support/Google/Chrome" "~/Library/Application Support/Chromium"
+  "~/Library/Application Support/Firefox" "~/Library/Application Support/BraveSoftware"
+  "~/Library/Application Support/1Password" "~/Library/Application Support/Code/User/globalStorage")
 for _d in "${CLAUDE_CONFIG_DIR:-/nonexistent}"/ "$AS_HOME"/workers/*/ "${CFG_NEXOS_CONFIG_DIR:-/nonexistent}"/; do
   [ -d "$_d" ] || continue
-  case $_d in *[[:space:]]*) continue ;; esac
   for _f in settings.json .claude.json .credentials.json auth.json; do
-    SECRET_PATHS="$SECRET_PATHS $(tilde "${_d%/}/$_f")"
+    SECRET_PATHS+=("$(tilde "${_d%/}/$_f")")
   done
 done
 unset _d _f
+
+# read_deny_extra <worktree> <run dir>: the paths of $WAW_HOME/read-deny, one per line (an
+# absolute path or ~/..., spaces kept; blank lines and # lines skipped). A path that is the
+# worktree, the run directory or a parent of either is skipped with a warning: the worker
+# needs them. Physical paths are compared (symlinks resolved when the path exists).
+read_deny_extra() {
+  local wdir=$1 wout=$2 f=$AS_HOME/read-deny line p rp s skip pw po
+  [ -f "$f" ] || return 0
+  pw=$(cd -P "$wdir" 2>/dev/null && pwd -P) || pw=$wdir
+  po=$(cd -P "$wout" 2>/dev/null && pwd -P) || po=$wout
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case $line in '' | '#'*) continue ;; esac
+    case $line in
+      "~/"*) p=$HOME/${line#"~/"} ;;
+      /*) p=$line ;;
+      *) printf 'agent.sh: read-deny: %s is not an absolute path, skipped\n' "$line" >&2; continue ;;
+    esac
+    p=${p%/}
+    rp=$p
+    if [ -d "$p" ]; then rp=$(cd -P "$p" && pwd -P) || rp=$p; fi
+    rp=${rp%/}
+    skip=0
+    for s in "$pw" "$po"; do
+      case "$s/" in "$rp"/*) skip=1 ;; esac
+    done
+    if [ "$skip" = 1 ]; then
+      printf 'agent.sh: read-deny: %s contains the worktree, skipped\n' "${p:-/}" >&2
+      continue
+    fi
+    tilde "$p"; printf '\n'
+    if [ "$rp" != "$p" ]; then tilde "$rp"; printf '\n'; fi
+  done <"$f"
+}
 
 # registry_hosts <dir>: the package registries named in <dir>/.npmrc and ~/.npmrc (host names).
 registry_hosts() {
@@ -328,10 +371,11 @@ registry_hosts() {
 worker_settings() {
   local role=$1 wdir=$2 wout=$3 install=$4 p hosts=()
   local secrets=()
-  for p in $SECRET_PATHS; do
+  for p in "${SECRET_PATHS[@]}"; do
     if [ "$install" = 1 ] && [ "$p" = "~/.npmrc" ]; then continue; fi
     secrets+=("$p")
   done
+  while IFS= read -r p; do [ -z "$p" ] || secrets+=("$p"); done < <(read_deny_extra "$wdir" "$wout")
   if [ "$install" = 1 ]; then
     hosts=(registry.npmjs.org)
     while IFS= read -r p; do [ -z "$p" ] || hosts+=("$p"); done < <(registry_hosts "$wdir")
@@ -413,10 +457,12 @@ toml_table() { toml_value; }
 codex_run_config() {
   local role=$1 wdir=$2 wout=$3 install=$4 extra=$5 p hosts=() effort
   local secrets=("~/.agents/skills")
-  for p in $SECRET_PATHS; do
+  for p in "${SECRET_PATHS[@]}"; do
     if [ "$install" = 1 ] && [ "$p" = "~/.npmrc" ]; then continue; fi
     secrets+=("$p")
   done
+  # worker_settings has warned about skipped read-deny lines already
+  while IFS= read -r p; do [ -z "$p" ] || secrets+=("$p"); done < <(read_deny_extra "$wdir" "$wout" 2>/dev/null)
   if [ "$install" = 1 ]; then
     hosts=(registry.npmjs.org)
     while IFS= read -r p; do [ -z "$p" ] || hosts+=("$p"); done < <(registry_hosts "$wdir")
@@ -957,7 +1003,9 @@ common=$(cat "$HERE/roles/common.md")
 [ -x "$guard" ] && [ -x "$push_guard" ] || die 3 "missing $guard or $push_guard"
 hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install") || die 3 "could not build the worker settings"
 
-# bypassPermissions is safe because the sandbox above isolates the worker, not the mode.
+# The OS sandbox confines Bash and its children; the file tools are held by worker-guard.sh
+# (physical path check) and the Read deny rules. bypassPermissions is used because those layers,
+# not the mode, keep the worker in scope.
 if bypass_disabled "$dir"; then mode=acceptEdits; else mode=bypassPermissions; fi
 # Permission prompts (a project's ask rules, a hook that asks, a command outside the allowed
 # ones) go to approve-mcp.mjs: granted files pass, other file edits go to the commander,
@@ -1132,37 +1180,42 @@ while :; do
       while [ ! -e "$AGENT_TEST_PAUSE_AFTER_GATE" ]; do sleep 0.1; done
     fi
     cd "$dir"
-    # The route's settings.json is the only source of the endpoint and the key: nothing the
-    # commander's environment holds (a gateway URL, API keys, forge tokens) reaches the worker
-    # or its Bash.
-    unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL \
-      ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
-      ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_OAUTH_TOKEN OPENROUTER_API_KEY OPENAI_API_KEY \
-      GEMINI_API_KEY GOOGLE_API_KEY DEEPSEEK_API_KEY GH_TOKEN GITHUB_TOKEN GITLAB_TOKEN \
-      GLAB_TOKEN NPM_TOKEN NODE_AUTH_TOKEN AGENTIC_GATEWAY_KEY
-    export CLAUDE_CONFIG_DIR=$WORKER_DIR WAW_HOME=$AS_HOME AGENT_ROLE=$role AGENT_NAME=$name AGENT_SCOPE=$dir \
-      AGENT_RUN_DIR=$out AGENT_EVENTS=$events AGENT_ALLOW_INSTALL=$allow_install \
-      AGENT_GRANTS=$grants BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=1800000 \
-      MCP_TOOL_TIMEOUT=600000
+    # The worker's CLI starts from an empty environment (env -i): a short allowlist, the names
+    # of AGENT_WORKER_ENV, and the values computed here. The route's settings.json is the only
+    # source of the endpoint and the key: nothing the commander's environment holds (a
+    # gateway URL, API keys, forge tokens, cloud credentials) reaches the worker or its Bash.
+    worker_env=()
+    IFS=' ' read -r -a extra_names <<<"$WORKER_ENV_NAMES" || true
+    for v in HOME USER LOGNAME SHELL PATH TMPDIR LANG LC_ALL LC_CTYPE LC_MESSAGES TERM TZ \
+      __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME \
+      HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy \
+      NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR ${extra_names[@]+"${extra_names[@]}"}; do
+      [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      if [ -n "${!v+x}" ]; then worker_env+=("$v=${!v}"); fi
+    done
+    worker_env+=(WAW_HOME="$AS_HOME" AGENT_ROLE="$role" AGENT_NAME="$name" AGENT_SCOPE="$dir"
+      AGENT_RUN_DIR="$out" AGENT_EVENTS="$events" AGENT_ALLOW_INSTALL="$allow_install"
+      AGENT_GRANTS="$grants" BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=1800000
+      MCP_TOOL_TIMEOUT=600000)
     # A project's stop-time checks (CLAUDE_CHECKS, a project's stop-check hook) keep
     # a session working until the changed files are green: only a developer can act on that;
     # the others would spend their turns on it (and see other workers' unfinished changes).
-    [ "$role" = developer ] || export CLAUDE_CHECKS=off
+    [ "$role" = developer ] || worker_env+=(CLAUDE_CHECKS=off)
+    if [ "$role" = developer ] && [ -n "${CLAUDE_CHECKS+x}" ]; then worker_env+=("CLAUDE_CHECKS=$CLAUDE_CHECKS"); fi
     if [ -f "$out/$name.stop" ]; then exit 6; fi
     if [ "$runner" = codex ]; then
-      unset CLAUDE_CONFIG_DIR CODEX_API_KEY CODEX_HOME
-      for v in $(compgen -v ORCA_ 2>/dev/null || true); do unset "$v"; done
-      export CODEX_HOME=$WORKER_DIR AGENT_BYPASS_DISABLED=$([ "$mode" = acceptEdits ] && echo 1 || echo 0) \
-        AGENT_ALLOWED=$AGENT_ALLOWED_V
+      worker_env+=(CODEX_HOME="$WORKER_DIR" AGENT_BYPASS_DISABLED="$([ "$mode" = acceptEdits ] && echo 1 || echo 0)"
+        AGENT_ALLOWED="$AGENT_ALLOWED_V")
       set -o pipefail
       if [ "$seg" = 0 ] && [ -z "$resume" ]; then
-        codex exec "${cxargs[@]}" - <"$input" 2>>"$err" | jq -n --unbuffered -c -f "$HERE/lib/codex-stream.jq" >>"$log"
+        env -i "${worker_env[@]}" codex exec "${cxargs[@]}" - <"$input" 2>>"$err" | jq -n --unbuffered -c -f "$HERE/lib/codex-stream.jq" >>"$log"
       else
-        codex exec resume "${cxargs[@]}" "$session" - <"$input" 2>>"$err" | jq -n --unbuffered -c -f "$HERE/lib/codex-stream.jq" >>"$log"
+        env -i "${worker_env[@]}" codex exec resume "${cxargs[@]}" "$session" - <"$input" 2>>"$err" | jq -n --unbuffered -c -f "$HERE/lib/codex-stream.jq" >>"$log"
       fi
       exit $?
     fi
-    exec claude "${args[@]}" "${sarg[@]}" <"$input" >>"$log" 2>>"$err"
+    worker_env+=(CLAUDE_CONFIG_DIR="$WORKER_DIR")
+    exec env -i "${worker_env[@]}" claude "${args[@]}" "${sarg[@]}" <"$input" >>"$log" 2>>"$err"
   ) &
   pid=$!
   seg_pid=$pid

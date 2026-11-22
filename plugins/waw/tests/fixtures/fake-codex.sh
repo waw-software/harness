@@ -12,6 +12,8 @@ if [ -n "${TEST_ROOT:-}" ]; then
   { echo "=== ${AGENT_NAME:-none}"; printf '%s\n' "$@"; echo "--- stdin"; printf '%s\n' "$stdin"
     echo "--- env"; echo "CODEX_HOME=${CODEX_HOME:-}"; echo "OPENAI_API_KEY=${OPENAI_API_KEY:-unset}"
     echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-unset}"; echo "AGENT_ROLE=${AGENT_ROLE:-unset}"; } >>"$TEST_ROOT/codex-args.log"
+  # the environment this start received, keyed by worker name
+  env >"$TEST_ROOT/codex-env-${AGENT_NAME:-none}.log"
 fi
 tid=0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001
 case " $* " in *" resume "*) tid=$(printf '%s\n' "$@" | awk 'p { print; exit } $0 == "resume" { p = 1 }' | grep -v '^-' || echo "$tid") ;; esac
