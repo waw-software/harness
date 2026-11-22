@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# worker-guard.sh: PreToolUse hook (matchers Bash and Edit|Write|NotebookEdit) for workers.
+# worker-guard.sh: PreToolUse hook (matchers Bash and Edit|Write|NotebookEdit|MultiEdit) for workers.
 # agent.sh passes it to every worker it starts (--settings), together with the push guard;
 # it is not in any settings.json. Does nothing unless AGENT_ROLE is set.
 #
@@ -17,7 +17,7 @@
 #
 # Input: the hook JSON on stdin. Exit 0 allows, exit 2 blocks with the reason on stderr.
 # A pattern match on the command text, not a shell parser: it stops accidents, not evasion.
-# Anything unexpected (no jq, unreadable input) allows. Portable to macOS /bin/bash 3.2.
+# No jq or unreadable input allows; a python3 failure blocks (command split and file-tool paths). Portable to macOS /bin/bash 3.2.
 set -u
 set -f # words are split, never globbed
 
@@ -249,7 +249,7 @@ print("\n".join(words(s).replace("\n", " ") for s in out))
 ' "$1"
 }
 segments=$(split_commands "$cmd" 2>/dev/null) ||
-  segments=$(printf '%s\n' "$cmd" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
+  block "this command" "worker-guard needs python3 to parse a command and python3 failed: report this as BLOCKED to the commander."
 
 check_segment() {
   local s=$1 w1 w2 w3 first n
