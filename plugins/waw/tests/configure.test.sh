@@ -181,6 +181,13 @@ case_uninstall() (
   assert_contains "$(cat "$ROOT/calls")" "claude plugin marketplace remove harness" "marketplace removed"
   assert_contains "$out" "security delete-generic-password -s gw-key" "keychain items listed, not deleted"
   if grep -q '^security' "$ROOT/calls" 2>/dev/null; then fail "uninstall touched the keychain"; fi
+  # Set up by an older apply (config there, no applied.json): settings equal to ours are ours.
+  mkdir -p "$UH"
+  printf 'AGENT_DEVELOPER_MODEL="x"\n' >"$UH/config"
+  printf '%s\n' "{\"theme\":\"dark\",\"model\":\"claude-opus-5-5\",\"attribution\":{\"commit\":\"\",\"pr\":\"\"},\"includeCoAuthoredBy\":false,\"statusLine\":{\"type\":\"command\",\"command\":\"'$UH/plugin/statusline.sh'\"},\"permissions\":{\"allow\":[\"Read\",\"Bash(agent.sh:*)\",\"EnterWorktree\"]},\"modelSettings\":{\"claude-opus-5-5\":{\"effortLevel\":\"high\"}}}" >"$C/settings.json"
+  bash "$CONF" apply "$ROOT/u2.json" >/dev/null || fail "apply on an older setup failed"
+  bash "$CONF" uninstall --keep-plugin >/dev/null || fail "uninstall of an older setup failed"
+  assert_eq "$(jq -S -c . "$C/settings.json")" '{"permissions":{"allow":["Read"]},"theme":"dark"}' "an older setup's settings are taken back too"
 )
 
 case_apply

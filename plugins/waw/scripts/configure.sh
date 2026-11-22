@@ -299,10 +299,13 @@ backup() { # backup <file>: copy it into this run's backup dir, keeping its path
 }
 
 apply() {
-  local choices=${1:-} r t url item m route role p k dm f tmp n link mod
+  local choices=${1:-} r t url item m route role p k dm f tmp n link mod legacy
   [ -n "$choices" ] && [ -r "$choices" ] || die 2 "usage: configure.sh apply <choices.json>"
   jq -e 'type == "object"' "$choices" >/dev/null 2>&1 || die 2 "$choices is not a JSON object"
   BACKUP=$AS_HOME/backups/$(stamp)
+  # Set up before apply recorded its changes (no applied.json yet): settings equal to ours are ours.
+  legacy=false
+  [ -f "$AS_HOME/config" ] && [ ! -f "$APPLIED" ] && legacy=true
 
   # Validate everything before writing anything.
   for r in $(jq -r '.routes // {} | keys[]' "$choices"); do
@@ -498,18 +501,26 @@ apply() {
   tmp=$(mktemp "$AS_HOME/.applied.XXXXXX")
   # shellcheck disable=SC2086 # the rules have no spaces
   jq -n --slurpfile c "$choices" --slurpfile o "$f" --slurpfile r <(cat "$APPLIED" 2>/dev/null || echo '{}') \
-    --arg sl "$AS_HOME/plugin/statusline.sh" --argjson perms "$(printf '%s\n' $PERMISSIONS | jq -R . | jq -s .)" '
+    --arg sl "$AS_HOME/plugin/statusline.sh" --argjson perms "$(printf '%s\n' $PERMISSIONS | jq -R . | jq -s .)" \
+    --argjson legacy "$legacy" '
     ($c[0].settings // {}) as $s | $o[0] as $o | ($r[0] // {}) as $r
-    | def was($k): {had: ($o | has($k)), value: $o[$k]};
+    | def ours($k): $legacy and (
+        if $k == "statusLine" then (($o.statusLine.command? // "") | test("/waw/plugin/statusline\\.sh"))
+        elif $k == "attribution" then $o.attribution == {commit: "", pr: ""}
+        elif $k == "includeCoAuthoredBy" then $o.includeCoAuthoredBy == false
+        elif $k == "model" then $o.model == $s.model
+        else false end);
+      def was($k): if ours($k) then {had: false, value: null} else {had: ($o | has($k)), value: $o[$k]} end;
       def first($rk; $k): if $r[$rk] then $r[$rk].before else was($k) end;
     $r
     | if $s.statusline == true then .statusLine = {set: {type: "command", command: ("\u0027" + $sl + "\u0027")}, before: first("statusLine"; "statusLine")} else . end
-    | if $s.permissions == true then .permissions_added = ((($r.permissions_added // []) + ($perms - ($o.permissions.allow // []))) | unique) else . end
+    | if $s.permissions == true then .permissions_added = ((($r.permissions_added // []) + (if $legacy then $perms else $perms - ($o.permissions.allow // []) end)) | unique) else . end
     | if $s.no_attribution == true then .attribution = {before: first("attribution"; "attribution"),
         coauthored_before: (if $r.attribution then $r.attribution.coauthored_before else was("includeCoAuthoredBy") end)} else . end
     | if ($s.model // "") != "" then .model = {set: $s.model, before: first("model"; "model")} else . end
     | if ($s.model // "") != "" and ($s.effort // "") != "" then .effort = {model: $s.model, set: $s.effort,
         before: (if $r.effort and $r.effort.model == $s.model then $r.effort.before
+          elif $legacy and $o.modelSettings[$s.model].effortLevel? == $s.effort then {had: false, value: null}
           else {had: ($o.modelSettings[$s.model] | has("effortLevel")?) // false, value: $o.modelSettings[$s.model].effortLevel?} end)} else . end' \
     >"$tmp" || { rm -f "$tmp"; die 3 "could not record the settings change"; }
   mv -f "$tmp" "$APPLIED"
