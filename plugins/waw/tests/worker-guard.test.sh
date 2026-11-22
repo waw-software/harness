@@ -28,7 +28,7 @@ run_tool() { # run_tool <role> <tool> <path-or-empty>: sets hrc
     jq -n --arg t "$tool" '{tool_name: $t, tool_input: {}}' >"$W/in.json"
   fi
   hrc=0
-  (cd "$SCOPE" && AGENT_ROLE=$role AGENT_SCOPE=$SCOPE AGENT_RUN_DIR=$RUN bash "$HOOK" <"$W/in.json" >/dev/null 2>"$W/err") || hrc=$?
+  (cd "${T_SCOPE:-$SCOPE}" && AGENT_ROLE=$role AGENT_SCOPE=${T_SCOPE:-$SCOPE} AGENT_RUN_DIR=${T_RUN:-$RUN} AGENT_GRANTS=${T_GRANTS:-} bash "$HOOK" <"$W/in.json" >/dev/null 2>"$W/err") || hrc=$?
 }
 run_bash() { # run_bash <command>: sets hrc
   jq -n --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' >"$W/in.json"
@@ -97,6 +97,45 @@ case_hidden_commands() {
   run_bash 'echo "a#b"'; assert_eq "$hrc" 0 "# inside quotes"
   run_bash 'echo foo # deliver.sh push'; assert_eq "$hrc" 0 "real comment"
 }
+case_hidden_in_substitution() {
+  run_bash 'echo "$(ls; deliver.sh push)"'; assert_eq "$hrc" 2 "; inside quoted substitution"
+  run_bash 'echo "$(ls && task.sh open x)"'; assert_eq "$hrc" 2 "&& inside quoted substitution"
+  run_bash 'echo "`ls; agent.sh run`"'; assert_eq "$hrc" 2 "; inside quoted backticks"
+  run_bash 'echo "a $(echo "b; c") d"; deliver.sh push'; assert_eq "$hrc" 2 "nested quotes then a real call"
+  run_bash 'echo "$(ls)" "x; deliver.sh"'; assert_eq "$hrc" 0 "second argument is quoted text"
+}
+case_python39_compatible() {
+  if [ ! -x /usr/bin/python3 ]; then
+    printf 'case_python39_compatible: skipped, /usr/bin/python3 is missing\n'
+    return 0
+  fi
+  mkdir -p "$W/shim"
+  printf '#!/bin/sh\nexec /usr/bin/python3 "$@"\n' >"$W/shim/python3"
+  chmod +x "$W/shim/python3"
+  PATH=$W/shim:$PATH dev Write "$SCOPE/sub/newdir/x" 0
+  PATH=$W/shim:$PATH dev Write "$SCOPE/h/x" 2
+}
+case_ship_symlink_out() {
+  mkdir -p "$W/scope2"
+  ln -s "$OUT" "$W/scope2/.ship"
+  T_SCOPE=$W/scope2 run_tool investigator Write "$W/scope2/.ship/x"
+  assert_eq "$hrc" 2 ".ship redirected outside"
+}
+case_run_dir_redirected() {
+  mkdir -p "$W/real_run"
+  ln -s "$W/real_run" "$W/run_link"
+  T_RUN=$W/run_link run_tool investigator Write "$W/run_link/x"
+  assert_eq "$hrc" 2 "run dir is a symlink"
+}
+case_project_settings_blocked() {
+  dev Write "$SCOPE/.claude/settings.json" 2
+  dev Write "$SCOPE/.claude/settings.local.json" 2
+  dev Edit "$SCOPE/.claude/hooks/x.sh" 2
+  dev Write "$SCOPE/.mcp.json" 2
+  run_tool investigator Write "$SCOPE/.claude/settings.json"; assert_eq "$hrc" 2 "investigator"
+  T_GRANTS=.claude/settings.json dev Write "$SCOPE/.claude/settings.json" 0
+  T_GRANTS=.claude/settings.json dev Write "$SCOPE/.mcp.json" 2
+}
 case_existing_git_rules_kept() {
   run_bash 'git push'; assert_eq "$hrc" 2 "git push"
 }
@@ -116,5 +155,10 @@ case_run_dir_scope
 case_quoted_search_argument
 case_direct_and_chained_commands
 case_hidden_commands
+case_hidden_in_substitution
+case_python39_compatible
+case_ship_symlink_out
+case_run_dir_redirected
+case_project_settings_blocked
 case_existing_git_rules_kept
 printf 'worker-guard.test.sh: all cases passed\n'

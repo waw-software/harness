@@ -58,11 +58,18 @@ inside() {
 # inside_physical <path> <root>: the physical target of the path (symlinks followed, also in
 # parents of a file that does not exist yet) is the root's physical path or under it. A `..`
 # component, a leading `~`, a dangling link, a loop or any error: not inside.
-inside_physical() {
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 -I -c '
+#   physical_path <path>: prints that physical target (the root need not exist), or fails.
+# Python 3.9 (macOS /usr/bin/python3) has no realpath(strict=True): strict_real stands in.
+PHYS_PY='
 import os, sys
-path, root, cwd = sys.argv[1:4]
+mode, path, root, cwd = sys.argv[1:5]
+
+def strict_real(x):
+    r = os.path.realpath(x)
+    if not os.path.exists(r):
+        raise OSError(x)
+    return r
+
 try:
     if path.startswith("~"):
         sys.exit(1)
@@ -70,7 +77,8 @@ try:
         path = cwd + "/" + path
     if ".." in path.split("/"):
         sys.exit(1)
-    root = os.path.realpath(root, strict=True)
+    if mode == "inside":
+        root = strict_real(root)
     cur = os.path.normpath(path)
     suffix = []
     while True:
@@ -83,15 +91,42 @@ try:
                 sys.exit(1)
             suffix.insert(0, os.path.basename(cur))
             cur = parent
-    resolved = os.path.realpath(cur, strict=True)
+    resolved = strict_real(cur)
     if suffix:
         if not os.path.isdir(resolved):
             sys.exit(1)
         resolved = os.path.join(resolved, *suffix)
+    if mode == "print":
+        print(resolved)
+        sys.exit(0)
     sys.exit(0 if os.path.commonpath([root, resolved]) == root else 1)
 except Exception:
     sys.exit(1)
-' "$1" "$2" "$PWD" 2>/dev/null
+'
+inside_physical() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -I -c "$PHYS_PY" inside "$1" "$2" "$PWD" 2>/dev/null
+}
+physical_path() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -I -c "$PHYS_PY" print "$1" "" "$PWD" 2>/dev/null
+}
+# protected_write <file>: the physical target is one of the project files that run code for
+# the next worker (settings, hooks, MCP servers) and is not listed in AGENT_GRANTS.
+protected_write() {
+  local pf ps t pt g rel
+  pf=$(physical_path "$1") || return 1
+  ps=$(physical_path "$scope") || return 1
+  for t in .claude/settings.json .claude/settings.local.json .claude/hooks .mcp.json; do
+    pt=$(physical_path "$scope/$t") || continue
+    case $pf in "$pt" | "$pt"/*) ;; *) continue ;; esac
+    rel=${pf#"$ps"/}
+    for g in ${AGENT_GRANTS:-}; do
+      [ "$g" = "$rel" ] && return 1
+    done
+    return 0
+  done
+  return 1
 }
 
 # ------------------------------------------------------------------ file tools
@@ -101,9 +136,17 @@ case $tool in
     file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null)
     [ -n "$scope" ] || exit 0
     [ -n "$file" ] || block "a file tool call without a path" "Give the file path; it must be inside $scope."
+    if protected_write "$file"; then
+      block "a write to $file" "Project settings and hooks run code for the next worker: the commander changes them."
+    fi
     case $AGENT_ROLE in
       investigator | tester | reviewer)
-        if inside_physical "$file" "$scope/.ship" || { [ -n "${AGENT_RUN_DIR:-}" ] && inside_physical "$file" "$AGENT_RUN_DIR"; }; then
+        # .ship must stay inside the scope, the run dir must be its own physical path:
+        # a link that redirects either one outside allows nothing.
+        run_phys=
+        [ -n "${AGENT_RUN_DIR:-}" ] && run_phys=$(cd "$AGENT_RUN_DIR" 2>/dev/null && pwd -P)
+        if { inside_physical "$scope/.ship" "$scope" && inside_physical "$file" "$scope/.ship"; } ||
+          { [ -n "$run_phys" ] && [ "$run_phys" = "${AGENT_RUN_DIR%/}" ] && inside_physical "$file" "$AGENT_RUN_DIR"; }; then
           exit 0
         fi
         block "a write to $file" "A $AGENT_ROLE writes only run files under $scope/.ship/ (notes, drafts, evidence)."
@@ -133,6 +176,7 @@ import sys
 t = sys.argv[1]
 out, cur = [], []
 q = None
+stack = []  # [saved quote state, "(" or "`", paren depth] of each open substitution
 i, n = 0, len(t)
 while i < n:
     c = t[i]
@@ -144,6 +188,8 @@ while i < n:
         if c == "`" or (c == "$" and t[i + 1:i + 2] == "("):
             out.append("".join(cur))
             cur = []
+            stack.append([q, "(" if c == "$" else "`", 0])
+            q = None
             i += 2 if c == "$" else 1
             continue
         cur.append(c)
@@ -164,6 +210,15 @@ while i < n:
             i += 1
         continue
     elif c in ";&|(){}`\n":
+        if stack and c == stack[-1][1] == "`":
+            q = stack.pop()[0]
+        elif stack and stack[-1][1] == "(" and c == "(":
+            stack[-1][2] += 1
+        elif stack and stack[-1][1] == "(" and c == ")":
+            if stack[-1][2] == 0:
+                q = stack.pop()[0]
+            else:
+                stack[-1][2] -= 1
         out.append("".join(cur))
         cur = []
     else:
