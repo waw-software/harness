@@ -321,7 +321,8 @@ registry_hosts() {
 #   sandbox      Claude Code's OS sandbox (Seatbelt on macOS) around every Bash command and
 #                its children: writes only in <dir>, <run dir>, the per-user temp dir and the
 #                tool caches; reads none of SECRET_PATHS; no network host (an install worker:
-#                its package registries), localhost allowed (tests start servers); no
+#                its package registries, and the pnpm 12 store operation lock, which pnpm
+#                keeps in /tmp/pnpm-store-operation-locks-<uid>), localhost allowed (tests start servers); no
 #                unsandboxed retry, and no worker without the sandbox.
 # AGENT_SANDBOX=off leaves the sandbox out, for debugging only: sandbox-check (and so
 # /auto-pilot) refuses then.
@@ -338,7 +339,7 @@ worker_settings() {
   fi
   jq -nc --arg g "$guard" --arg pg "$push_guard" --arg d "$wdir" --arg o "$wout" \
     --arg role "$role" --arg install "$install" --arg sb "${AGENT_SANDBOX:-on}" \
-    --arg hosts "${hosts[*]:-}" '
+    --arg hosts "${hosts[*]:-}" --arg uid "$(id -u)" '
     ($ARGS.positional) as $sec
     | {hooks: {PreToolUse: [
         {matcher: "Bash", hooks: [{type: "command", command: $g}, {type: "command", command: $pg}]},
@@ -348,7 +349,8 @@ worker_settings() {
         enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
         filesystem: {
           allowWrite: ([$d, $o, "~/Library/Caches", "~/.cache"]
-            + (if $install == "1" then ["~/Library/pnpm", "~/.pnpm-store", "~/.npm"] else [] end)),
+            + (if $install == "1" then ["~/Library/pnpm", "~/.pnpm-store", "~/.npm",
+                 "/private/tmp/pnpm-store-operation-locks-\($uid)"] else [] end)),
           denyRead: $sec},
         network: {strictAllowlist: true, allowLocalBinding: true,
           allowedDomains: ($hosts | split(" ") | map(select(. != "")))}}) end
@@ -421,10 +423,11 @@ codex_run_config() {
     hosts=(registry.npmjs.org)
     while IFS= read -r p; do [ -z "$p" ] || hosts+=("$p"); done < <(registry_hosts "$wdir")
   fi
-  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --argjson extra "$extra" '
+  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --arg uid "$(id -u)" --argjson extra "$extra" '
     ($ARGS.positional | map({(.): "deny"}) | add // {}) as $deny
     | {":root": "read", ":tmpdir": "write", ($o): "write", "~/Library/Caches": "write", "~/.cache": "write"}
-      + (if $install == "1" then {"~/Library/pnpm": "write", "~/.pnpm-store": "write", "~/.npm": "write"} else {} end)
+      + (if $install == "1" then {"~/Library/pnpm": "write", "~/.pnpm-store": "write", "~/.npm": "write",
+           "/private/tmp/pnpm-store-operation-locks-\($uid)": "write"} else {} end)
       + $deny + ($extra | del(.[":workspace_roots"]))
       + {":workspace_roots": ({".": "write"} + ($extra[":workspace_roots"] // {}))}' --args "${secrets[@]}" | toml_table)"
   printf 'permissions.worker.network=%s\n' "$(jq -nc --arg hosts "${hosts[*]:-}" '

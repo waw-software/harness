@@ -55,6 +55,9 @@ case_tester_and_install() {
   assert_eq "$(jqs "$s" '.sandbox.network.allowedDomains | index("registry.npmjs.org") != null')" true "npm registry"
   assert_eq "$(jqs "$s" '.sandbox.network.allowedDomains | index("npm.example.invalid") != null')" true "project registry"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.npmrc") == null')" true "installer reads ~/.npmrc"
+  assert_eq "$(jqs "$s" ".sandbox.filesystem.allowWrite | index(\"/private/tmp/pnpm-store-operation-locks-$(id -u)\") != null")" true "installer takes the pnpm 12 store lock"
+  s=$(settings_of sb-test)
+  assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite | map(select(startswith("/private/tmp/"))) | length')" 0 "no /tmp write without --allow-install"
 }
 
 case_sandbox_off_and_check() {
