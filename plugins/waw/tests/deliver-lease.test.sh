@@ -71,7 +71,8 @@ dsh() { # dsh <dir> <args...>: run the staging deliver.sh there with the shim on
 }
 
 osh() { git -C "$C/origin.git" rev-parse --verify "$1" 2>/dev/null; }
-log_lines() { grep -c "^$1" "$GIT_LOG" 2>/dev/null || true; }
+NOHOOKS='-c core.hooksPath=/dev/null -c core.fsmonitor=false'
+log_lines() { grep -Ec "^($NOHOOKS )?$1" "$GIT_LOG" 2>/dev/null || true; }
 
 case_first_push_requires_plain_mode() {
   C=$R/first; mkdir -p "$C"
@@ -105,9 +106,9 @@ case_rewritten_current_branch_with_pinned_lease() {
   assert_eq "$(osh refs/heads/feat/x)" "$b" "origin/feat/x moved to the rewrite"
   assert_eq "$(osh refs/heads/other)" "$other" "other refs unchanged"
   assert_eq "$(log_lines push)" "1" "exactly one push"
-  local want='push --force-with-lease=feat/x:'"$a"' origin HEAD:refs/heads/feat/x'
-  grep -Fqx "$want" "$GIT_LOG" || fail "exact lease argv: got [$(cat "$GIT_LOG")]"
-  grep -Eq '^push .*(--force$| -f$|--force-with-lease )' "$GIT_LOG" &&
+  local want="$NOHOOKS"' push --force-with-lease=feat/x:'"$a"' origin HEAD:refs/heads/feat/x'
+  grep -Fqx -- "$want" "$GIT_LOG" || fail "exact lease argv: got [$(cat "$GIT_LOG")]"
+  grep -Eq ' push .*(--force$| -f$|--force-with-lease )' "$GIT_LOG" &&
     fail "unpinned lease or plain force reached git"
   grep -q '^fetch' "$GIT_LOG" && fail "lease mode fetched"
 }
@@ -228,10 +229,205 @@ case_mr_stays_plain() {
   assert_eq "$rc" 0 "existing mr returned"
   assert_contains "$out" "an open merge request exists already: $url"
   assert_eq "$(log_lines push)" "1" "mr pushed once"
-  grep -Fq 'push -u origin feat/m' "$GIT_LOG" || fail "mr used the plain push: [$(cat "$GIT_LOG")]"
+  grep -Fq -- "$NOHOOKS push -u origin feat/m" "$GIT_LOG" || fail "mr used the plain push: [$(cat "$GIT_LOG")]"
   grep -q 'force-with-lease' "$GIT_LOG" && fail "a lease flag reached git from mr"
   grep -q 'mr create' "$GLAB_LOG" && fail "mr create ran although an mr exists"
   grep -Fq 'mr list --source-branch feat/m' "$GLAB_LOG" || fail "mr list was not asked"
+}
+
+hook_case() { # hook_case <name> <branch>: a repo whose two hook locations write markers
+  new_case "$1" "$2"
+  mkdir -p "$C/clone/.husky"
+  printf '#!/bin/sh\ntouch "%s/marker-git"\n' "$C" >"$C/clone/.git/hooks/pre-push"
+  printf '#!/bin/sh\ntouch "%s/marker-husky"\n' "$C" >"$C/clone/.husky/pre-push"
+  chmod 755 "$C/clone/.git/hooks/pre-push" "$C/clone/.husky/pre-push"
+  git -C "$C/clone" config core.hooksPath .husky
+}
+no_markers() { [ ! -e "$C/marker-git" ] && [ ! -e "$C/marker-husky" ] || fail "a git hook ran: $1"; }
+
+case_push_hooks_disabled() {
+  hook_case hooks-push feat/h1
+  git -C "$C/clone" commit -q --allow-empty -m more
+  dsh "$C/clone" push
+  assert_eq "$rc" 0 "plain push succeeds"
+  assert_eq "$(osh refs/heads/feat/h1)" "$(git -C "$C/clone" rev-parse HEAD)" "remote has the commit"
+  no_markers "plain push"
+}
+
+case_lease_push_hooks_disabled() {
+  hook_case hooks-lease feat/h2
+  git -C "$C/clone" commit -q --allow-empty --amend -m rewritten
+  dsh "$C/clone" push --force-with-lease
+  assert_eq "$rc" 0 "lease push succeeds"
+  assert_eq "$(osh refs/heads/feat/h2)" "$(git -C "$C/clone" rev-parse HEAD)" "remote has the rewrite"
+  no_markers "lease push"
+}
+
+case_mr_push_hooks_disabled() {
+  hook_case hooks-mr feat/h3
+  git -C "$C/clone" commit -q --allow-empty -m more
+  printf 'description\n' >"$R/desc.md"
+  dsh "$C/clone" mr --title T --description-file "$R/desc.md" --target main
+  assert_eq "$rc" 0 "mr succeeds"
+  assert_eq "$(osh refs/heads/feat/h3)" "$(git -C "$C/clone" rev-parse HEAD)" "remote has the commit"
+  no_markers "mr push"
+}
+
+commit_hook_case() { # commit_hook_case <name> <branch>: marker hooks for commit, in both places
+  new_case "$1" "$2"
+  mkdir -p "$C/clone/.husky"
+  local h
+  for h in pre-commit commit-msg post-commit; do
+    printf '#!/bin/sh\ntouch "%s/marker-git-%s"\n' "$C" "$h" >"$C/clone/.git/hooks/$h"
+    printf '#!/bin/sh\ntouch "%s/marker-husky-%s"\n' "$C" "$h" >"$C/clone/.husky/$h"
+    chmod 755 "$C/clone/.git/hooks/$h" "$C/clone/.husky/$h"
+  done
+  git -C "$C/clone" config core.hooksPath .husky
+  printf 'message\n\nbody\n' >"$C/msg.txt"
+}
+
+case_commit_hooks_disabled() {
+  commit_hook_case hooks-commit feat/c1
+  local before; before=$(git -C "$C/clone" rev-parse HEAD)
+  printf 'a\n' >"$C/clone/a.txt"
+  printf 'b\n' >"$C/clone/b.txt"
+  dsh "$C/clone" commit --message-file "$C/msg.txt" a.txt
+  assert_eq "$rc" 0 "commit succeeds"
+  assert_contains "$out" "deliver: commit "
+  assert_contains "$out" " message"
+  [ "$(git -C "$C/clone" rev-parse HEAD)" != "$before" ] || fail "no commit was made"
+  assert_eq "$(git -C "$C/clone" rev-parse HEAD^)" "$before" "one commit on top"
+  assert_eq "$(git -C "$C/clone" show --name-only --format= HEAD)" "a.txt" "only the named path is committed"
+  assert_eq "$(git -C "$C/clone" log -1 --format=%B HEAD | head -n 1)" "message" "message from the file"
+  ls "$C"/marker-* >/dev/null 2>&1 && fail "a git hook ran: $(ls "$C"/marker-*)"
+  grep -Fq -e "$NOHOOKS --literal-pathspecs commit -F $C/msg.txt" "$GIT_LOG" || fail "commit did not go through the hooks-off form: [$(cat "$GIT_LOG")]"
+  grep -Fq -e "$NOHOOKS --literal-pathspecs add -- a.txt" "$GIT_LOG" || fail "add did not go through the hooks-off form: [$(cat "$GIT_LOG")]"
+}
+
+case_commit_refuses_protected() {
+  commit_hook_case commit-prot main
+  local before; before=$(git -C "$C/clone" rev-parse HEAD)
+  printf 'a\n' >"$C/clone/a.txt"
+  dsh "$C/clone" commit --message-file "$C/msg.txt" a.txt
+  assert_eq "$rc" 3 "commit on main refused"
+  assert_contains "$err" "protected"
+  assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit on main"
+  assert_eq "$(log_lines add)" "0" "nothing staged"
+}
+
+case_commit_needs_paths() {
+  commit_hook_case commit-nopath feat/c2
+  local before; before=$(git -C "$C/clone" rev-parse HEAD)
+  dsh "$C/clone" commit --message-file "$C/msg.txt"
+  [ "$rc" -ne 0 ] || fail "commit without a path succeeded"
+  assert_contains "$err" "usage:"
+  assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit"
+}
+
+case_commit_only_named_paths() {
+  new_case commit-only feat/c3
+  printf 'message\n' >"$C/msg.txt"
+  printf 'a\n' >"$C/clone/a.txt"
+  printf 'o\n' >"$C/clone/other.txt"
+  git -C "$C/clone" add other.txt
+  dsh "$C/clone" commit --message-file "$C/msg.txt" a.txt
+  assert_eq "$rc" 0 "commit succeeds"
+  assert_eq "$(git -C "$C/clone" show --name-only --format= HEAD)" "a.txt" "only the named path is committed"
+  assert_eq "$(git -C "$C/clone" diff --cached --name-only)" "other.txt" "the other staged file stays staged"
+}
+
+case_commit_literal_paths() {
+  new_case commit-literal feat/c4
+  printf 'message\n' >"$C/msg.txt"
+  printf 'b\n' >"$C/clone/b.txt"
+  git -C "$C/clone" add b.txt
+  git -C "$C/clone" commit -q -m b
+  local before; before=$(git -C "$C/clone" rev-parse HEAD)
+  printf 'b2\n' >"$C/clone/b.txt"
+  local spec
+  for spec in '*' ':(glob)**'; do
+    dsh "$C/clone" commit --message-file "$C/msg.txt" "$spec"
+    [ "$rc" -ne 0 ] || fail "commit of the pattern $spec succeeded"
+    assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit for the pattern $spec"
+    assert_eq "$(git -C "$C/clone" diff --cached --name-only)" "" "nothing staged for the pattern $spec"
+  done
+}
+
+case_commit_refuses_directory() {
+  new_case commit-dir feat/c5
+  printf 'message\n' >"$C/msg.txt"
+  mkdir "$C/clone/d"
+  printf 'x\n' >"$C/clone/d/x.txt"
+  local before; before=$(git -C "$C/clone" rev-parse HEAD)
+  dsh "$C/clone" commit --message-file "$C/msg.txt" d
+  assert_eq "$rc" 2 "a directory argument is usage"
+  assert_contains "$err" "usage:"
+  assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit"
+}
+
+make_lfs() { # a fake git-lfs: records its argv, answers version
+  mkdir -p "$R/lfsbin"
+  cat >"$R/lfsbin/git-lfs" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$R/lfs.log"
+if [ "\$1" = version ]; then echo "git-lfs/3.0.0"; exit 0; fi
+exit 0
+EOF
+  chmod 755 "$R/lfsbin/git-lfs"
+}
+
+case_lfs_push_before_push() {
+  make_lfs
+  new_case lfs feat/l1
+  printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$C/clone/.gitattributes"
+  printf 'x\n' >"$C/clone/a.bin"
+  git -C "$C/clone" add .gitattributes a.bin
+  git -C "$C/clone" commit -q -m lfs
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 0 "push with lfs succeeds"
+  grep -Fqx 'push origin feat/l1' "$R/lfs.log" || fail "lfs push not run: [$(cat "$R/lfs.log")]"
+  local l p
+  l=$(grep -n -e ' lfs push origin feat/l1' "$GIT_LOG" | head -n 1 | cut -d: -f1)
+  p=$(grep -n -e ' push -u origin feat/l1' "$GIT_LOG" | head -n 1 | cut -d: -f1)
+  [ -n "$l" ] && [ -n "$p" ] && [ "$l" -lt "$p" ] || fail "lfs push did not come before the push: [$(cat "$GIT_LOG")]"
+  grep -Fq -e "$NOHOOKS lfs push" "$GIT_LOG" || fail "lfs push was not hooks-off: [$(cat "$GIT_LOG")]"
+
+  new_case lfs-none feat/l2
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 0 "push without lfs files succeeds"
+  grep -q '^push' "$R/lfs.log" && fail "lfs push ran without lfs files: [$(cat "$R/lfs.log")]"
+  return 0
+}
+
+case_lfsconfig_changed_refused() {
+  make_lfs
+  new_case lfscfg feat/l3
+  local before; before=$(osh refs/heads/feat/l3)
+  printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$C/clone/.gitattributes"
+  printf 'x\n' >"$C/clone/a.bin"
+  printf '[lfs]\n\turl = https://evil.invalid/lfs\n' >"$C/clone/.lfsconfig"
+  git -C "$C/clone" add .gitattributes a.bin .lfsconfig
+  git -C "$C/clone" commit -q -m lfs
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 3 "push with a branch-added .lfsconfig refused"
+  assert_contains "$err" ".lfsconfig changed on this branch"
+  grep -q '^push' "$R/lfs.log" && fail "lfs push ran: [$(cat "$R/lfs.log")]"
+  assert_eq "$(osh refs/heads/feat/l3)" "$before" "nothing pushed"
+  # the worktree copy differs from HEAD
+  new_case lfscfg-wt feat/l4
+  printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$C/clone/.gitattributes"
+  printf 'x\n' >"$C/clone/a.bin"
+  git -C "$C/clone" add .gitattributes a.bin
+  git -C "$C/clone" commit -q -m lfs
+  printf '[lfs]\n\turl = https://evil.invalid/lfs\n' >"$C/clone/.lfsconfig"
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 3 "push with an untracked .lfsconfig refused"
+  grep -q '^push' "$R/lfs.log" && fail "lfs push ran: [$(cat "$R/lfs.log")]"
+  return 0
 }
 
 case_first_push_requires_plain_mode
@@ -240,4 +436,15 @@ case_stale_lease_preserves_remote_work
 case_protected_and_wrong_upstream
 case_reject_force_variants
 case_mr_stays_plain
-printf 'deliver-lease.test.sh: all six cases passed\n'
+case_push_hooks_disabled
+case_lease_push_hooks_disabled
+case_mr_push_hooks_disabled
+case_commit_hooks_disabled
+case_commit_refuses_protected
+case_commit_needs_paths
+case_commit_only_named_paths
+case_lfs_push_before_push
+case_commit_literal_paths
+case_commit_refuses_directory
+case_lfsconfig_changed_refused
+printf 'deliver-lease.test.sh: all seventeen cases passed\n'

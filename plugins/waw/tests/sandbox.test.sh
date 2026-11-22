@@ -9,6 +9,8 @@ ROOT=$TEST_ROOT/sandbox-cases
 ARGS=$TEST_ROOT/claude-args.log
 STARTS=$TEST_ROOT/claude-starts.log
 mkdir -p "$ROOT"
+# The worker starts from an empty environment: the fake claude reads these names from ours.
+export AGENT_WORKER_ENV="TEST_ROOT FAKE_CLAUDE_MODE FAKE_CLAUDE_BARRIER"
 cp "$TESTS_DIR/fixtures/fake-claude.sh" "$TEST_ROOT/bin/claude"
 chmod 755 "$TEST_ROOT/bin/claude"
 
@@ -119,10 +121,94 @@ case_budget_in_real_dollars() {
   assert_eq "$budget" "5" "no price: the budget as it is"
 }
 
+case_space_path_denied() {
+  local s d="$HOME/.claude/waw/workers/spaced route"
+  mkdir -p "$d"
+  printf '{}\n' >"$d/settings.json"
+  assert_exit 0 run_worker sb-space developer "$ROOT/space"
+  s=$(settings_of sb-space)
+  assert_eq "$(jqs "$s" '.permissions.deny | index("Read(~/.claude/waw/workers/spaced route/settings.json)") != null')" true "space path in Read deny"
+  assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.claude/waw/workers/spaced route/settings.json") != null')" true "space path in denyRead"
+  rm -rf "$d"
+}
+
+case_new_default_denies() {
+  local s p
+  assert_exit 0 run_worker sb-newdeny developer "$ROOT/newdeny"
+  s=$(settings_of sb-newdeny)
+  for p in "~/.gnupg" "~/.kube" "~/.config/gcloud" "~/.azure" "~/.config/azure" "~/.config/doctl" "~/.oci" \
+    "~/.zsh_history" "~/.bash_history" "~/.sh_history" "~/.zhistory" "~/.zsh_sessions" "~/.bash_sessions" \
+    "~/.local/share/fish/fish_history" "~/Library/Application Support/Google/Chrome" \
+    "~/Library/Application Support/Chromium" "~/Library/Application Support/Firefox" \
+    "~/Library/Application Support/BraveSoftware" "~/Library/Application Support/1Password" \
+    "~/Library/Application Support/Code/User/globalStorage"; do
+    printf '%s' "$s" | jq -e --arg p "$p" '(.sandbox.filesystem.denyRead | index($p)) != null
+      and (.permissions.deny | index("Read(\($p))")) != null and (.permissions.deny | index("Read(\($p)/**)")) != null' >/dev/null ||
+      fail "default deny missing: $p"
+  done
+}
+
+case_read_deny_file() {
+  local s cwd=$ROOT/rd err
+  mkdir -p "$cwd" "$HOME/.claude/waw"
+  cwd=$(cd "$cwd" && pwd -P)
+  {
+    printf '# neighbours\n\n'
+    printf '%s\n' "$TEST_ROOT/sibling checkout" "~/other-repo" "$cwd" "$ROOT"
+  } >"$HOME/.claude/waw/read-deny"
+  assert_exit 0 run_worker sb-rd developer "$cwd"
+  s=$(settings_of sb-rd)
+  printf '%s' "$s" | jq -e --arg p "$TEST_ROOT/sibling checkout" '(.sandbox.filesystem.denyRead | index($p)) != null
+    and (.permissions.deny | index("Read(/\($p)/**)")) != null and (.permissions.deny | index("Read(/\($p))")) != null' >/dev/null || fail "read-deny line with a space missing (absolute: //path in permissions.deny)"
+  printf '%s' "$s" | jq -e '.sandbox.filesystem.denyRead | index("~/other-repo") != null' >/dev/null || fail "~/ read-deny line missing"
+  printf '%s' "$s" | jq -e '(.permissions.deny | index("Read(~/other-repo/**)")) != null' >/dev/null || fail "~/ entry must stay Read(~/...)"
+  printf '%s' "$s" | jq -e --arg c "$cwd" '.sandbox.filesystem.denyRead | index($c) == null' >/dev/null || fail "the worktree itself was denied"
+  printf '%s' "$s" | jq -e --arg c "$ROOT" '.sandbox.filesystem.denyRead | index($c) == null' >/dev/null || fail "a parent of the worktree was denied"
+  err=$(cat "$ROOT/sb-rd.err")
+  assert_contains "$err" "agent.sh: read-deny: $cwd contains the worktree, skipped" "warning for the scope"
+  assert_contains "$err" "agent.sh: read-deny: $ROOT contains the worktree, skipped" "warning for a parent"
+  rm -f "$HOME/.claude/waw/read-deny"
+}
+
+case_parent_env_allowlist() {
+  local f=$TEST_ROOT/claude-env-sb-env.log
+  WAW_TEST_SECRET=leak AWS_SESSION_TOKEN=leak WAW_TEST_PASS=passed AGENT_WORKER_ENV="$AGENT_WORKER_ENV WAW_TEST_PASS" \
+    assert_exit 0 run_worker sb-env developer "$ROOT/env"
+  [ -s "$f" ] || fail "the fake claude recorded no environment"
+  ! grep -q '^WAW_TEST_SECRET=' "$f" || fail "WAW_TEST_SECRET leaked to the worker"
+  ! grep -q '^AWS_SESSION_TOKEN=' "$f" || fail "AWS_SESSION_TOKEN leaked to the worker"
+  grep -q "^HOME=$HOME\$" "$f" || fail "HOME missing"
+  grep -q '^PATH=' "$f" || fail "PATH missing"
+  grep -q '^AGENT_ROLE=developer$' "$f" || fail "AGENT_ROLE missing"
+  grep -q '^AGENT_NAME=sb-env$' "$f" || fail "AGENT_NAME missing"
+  grep -q '^WAW_TEST_PASS=passed$' "$f" || fail "a name in AGENT_WORKER_ENV did not pass"
+}
+
+case_proxy_credentials() {
+  local f=$TEST_ROOT/claude-env-sb-proxy.log
+  HTTPS_PROXY=http://u:p@proxy:3128 HTTP_PROXY=http://proxy:3128 assert_exit 0 run_worker sb-proxy developer "$ROOT/proxy"
+  ! grep -q '^HTTPS_PROXY=' "$f" || fail "a proxy value with credentials was passed by default"
+  grep -q '^HTTP_PROXY=http://proxy:3128$' "$f" || fail "a proxy value without credentials was not passed"
+  HTTPS_PROXY=u:p@proxy:3128 NO_PROXY=localhost,.example.test HTTP_PROXY=http://proxy:3128/path@x \
+    assert_exit 0 run_worker sb-proxy3 developer "$ROOT/proxy3"
+  f=$TEST_ROOT/claude-env-sb-proxy3.log
+  ! grep -q '^HTTPS_PROXY=' "$f" || fail "a schemeless proxy value with credentials was passed by default"
+  grep -q '^NO_PROXY=localhost,.example.test$' "$f" || fail "NO_PROXY without @ was not passed"
+  grep -q '^HTTP_PROXY=http://proxy:3128/path@x$' "$f" || fail "an @ after the host was taken for credentials"
+  f=$TEST_ROOT/claude-env-sb-proxy2.log
+  HTTPS_PROXY=http://u:p@proxy:3128 AGENT_WORKER_ENV="$AGENT_WORKER_ENV HTTPS_PROXY" assert_exit 0 run_worker sb-proxy2 developer "$ROOT/proxy2"
+  grep -q '^HTTPS_PROXY=http://u:p@proxy:3128$' "$f" || fail "a proxy named in AGENT_WORKER_ENV was not passed"
+}
+
 case_developer_sandbox
 case_budget_in_real_dollars
 case_tester_and_install
 case_sandbox_off_and_check
 case_tester_waits_for_developer
 case_report_fix_and_steer
-printf 'sandbox.test.sh: all six cases passed\n'
+case_space_path_denied
+case_new_default_denies
+case_read_deny_file
+case_parent_env_allowlist
+case_proxy_credentials
+printf 'sandbox.test.sh: all eleven cases passed\n'

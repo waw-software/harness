@@ -250,8 +250,12 @@ question_file=$(abs "$question_file") task_file=$(abs "$task_file")
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/waw.attack.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
+# Every git call of this script runs on the host: no fsmonitor (it is a program the repository
+# configures).
+git_safe() { git -c core.fsmonitor=false "$@"; }
+
 # The repository's top level (physical path), empty outside a repository.
-REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null) && REPO_TOP=$(cd -P -- "$REPO_TOP" && pwd -P) || REPO_TOP=""
+REPO_TOP=$(git_safe rev-parse --show-toplevel 2>/dev/null) && REPO_TOP=$(cd -P -- "$REPO_TOP" && pwd -P) || REPO_TOP=""
 [ -z "$REPO_TOP" ] || cd "$REPO_TOP"
 
 # secret_name <path>: the file name looks like it holds a secret.
@@ -281,7 +285,7 @@ eligible() {
   case $phys in "$REPO_TOP"/*) ;; *) return 1 ;; esac
   case /${phys#"$REPO_TOP"/} in */.git/*) return 1 ;; esac
   ! secret_name "$f" || return 1
-  git -C "$REPO_TOP" check-ignore -q -- "${phys#"$REPO_TOP"/}" 2>/dev/null || rc=$?
+  git_safe -C "$REPO_TOP" check-ignore -q -- "${phys#"$REPO_TOP"/}" 2>/dev/null || rc=$?
   [ "$rc" = 1 ]
 }
 
@@ -355,25 +359,25 @@ prompt_file="$PROMPT_DIR/$role.md"
 : >"$tmp/omitted"
 : >"$tmp/cut.docs"
 mb="" head_sha="" diff_cut=0 not_sent=0
-head_sha=$(git rev-parse -q --verify HEAD 2>/dev/null || true)
+head_sha=$(git_safe rev-parse -q --verify HEAD 2>/dev/null || true)
 if [ "$input" = diff ]; then
   [ -n "$REPO_TOP" ] || die 2 "not inside a git repository"
   if [ -z "$base" ]; then
-    base=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    base=$(git_safe symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
     if [ -z "$base" ]; then
       for b in main master; do
-        if git rev-parse -q --verify "$b" >/dev/null 2>&1; then base=$b; break; fi
+        if git_safe rev-parse -q --verify "$b" >/dev/null 2>&1; then base=$b; break; fi
       done
     fi
   fi
   [ -n "$base" ] || die 2 "no base branch found; pass --base <ref>"
-  mb=$(git merge-base "$base" HEAD 2>/dev/null) || die 2 "no merge base with '$base'"
+  mb=$(git_safe merge-base "$base" HEAD 2>/dev/null) || die 2 "no merge base with '$base'"
   # The changed files, read NUL-delimited (git quotes unusual names in its line output). One
   # with a secret-like name or a line break in its name is not sent: it is left out of the
   # diff and of the file contents, and only counted. No rename detection: each section of
   # the diff is one name of $tmp/tracked, in the same order.
-  git diff --no-renames --name-only -z "$mb" >"$tmp/tracked.z"
-  git ls-files --others --exclude-standard -z >"$tmp/untracked.z"
+  git_safe diff --no-ext-diff --no-textconv --no-renames --name-only -z "$mb" >"$tmp/tracked.z"
+  git_safe ls-files --others --exclude-standard -z >"$tmp/untracked.z"
   excluded=()
   for list in tracked untracked; do
     while IFS= read -r -d '' f; do
@@ -385,7 +389,7 @@ if [ "$input" = diff ]; then
       [ "$list" = untracked ] || excluded+=(":(top,exclude,literal)$f")
     done <"$tmp/$list.z"
   done
-  git diff --no-renames "$mb" -- ':(top)' ${excluded[@]+"${excluded[@]}"} >"$tmp/diff"
+  git_safe diff --no-ext-diff --no-textconv --no-renames "$mb" -- ':(top)' ${excluded[@]+"${excluded[@]}"} >"$tmp/diff"
   cat "$tmp/tracked" "$tmp/untracked" >"$tmp/files"
   if [ ! -s "$tmp/files" ]; then
     if [ "$not_sent" = 0 ]; then
@@ -436,7 +440,7 @@ awk '!seen[$0]++' "$tmp/omitted" >"$tmp/omitted.list"
 # codex_diff_cmd: the git command for the whole change, with the exclusions of the diff above.
 codex_diff_cmd() {
   local e
-  printf 'git diff --no-renames %s --' "$mb"
+  printf 'git diff --no-ext-diff --no-textconv --no-renames %s --' "$mb"
   for e in ':(top)' ${excluded[@]+"${excluded[@]}"}; do printf ' %q' "$e"; done
 }
 
@@ -459,7 +463,7 @@ emit_omitted() {
     codex)
       if [ "$changes" = 1 ]; then
         # shellcheck disable=SC2016 # the backticks are Markdown
-        printf 'The change is `%s` (merge base %s to the working tree, HEAD %s). Read the omitted files and their diff (`git diff --no-renames %s -- <file>`) in the repository before you answer.\n' \
+        printf 'The change is `%s` (merge base %s to the working tree, HEAD %s). Read the omitted files and their diff (`git diff --no-ext-diff --no-textconv --no-renames %s -- <file>`) in the repository before you answer.\n' \
           "$(codex_diff_cmd)" "$mb" "$head_sha" "$mb"
       fi
       [ ! -s "$tmp/cut.docs" ] || printf 'Read the rest of each cut document at its path before you answer.\n'

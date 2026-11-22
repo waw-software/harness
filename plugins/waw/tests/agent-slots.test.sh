@@ -12,6 +12,8 @@ STARTS=$TEST_ROOT/claude-starts.log
 ARGS=$TEST_ROOT/claude-args.log
 RUNS_REC=$ROOT/runs.txt
 mkdir -p "$ROOT"
+# The worker starts from an empty environment: the fake claude reads these names from ours.
+export AGENT_WORKER_ENV="TEST_ROOT FAKE_CLAUDE_MODE FAKE_CLAUDE_BARRIER"
 cp "$TESTS_DIR/fixtures/fake-claude.sh" "$TEST_ROOT/bin/claude"
 chmod 755 "$TEST_ROOT/bin/claude"
 

@@ -14,6 +14,8 @@ if [ -n "${TEST_ROOT:-}" ]; then
   printf '%s\t%s\n' "${AGENT_NAME:-none}" "$(printf '%s' "$*" | tr '\t\n' '  ')" \
     >>"$TEST_ROOT/claude-starts.log"
   { echo "=== ${AGENT_NAME:-none}"; printf '%s\n' "$@"; } >>"$TEST_ROOT/claude-args.log"
+  # the environment this start received, keyed by worker name
+  env >"$TEST_ROOT/claude-env-${AGENT_NAME:-none}.log"
 fi
 
 result() {

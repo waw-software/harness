@@ -80,6 +80,41 @@ session start, waw itself:
 Your choices, routes and logins in `<config>/waw/` stay. Run `/configure` again only when the
 changes ask for it (new route types or settings).
 
+### Pin a machine to a reviewed revision
+
+Use this on a machine whose code must not change by itself (a work machine, for example):
+the plugin's code runs on every machine that updates, so every push to `main` would otherwise
+reach it. `claude plugin marketplace add` takes a URL, a path or a GitHub repo, so the pin is
+made from a local checkout that you move on purpose.
+
+```sh
+git clone https://github.com/waw-software/harness.git ~/waw-pinned
+git -C ~/waw-pinned checkout --detach <reviewed commit sha>
+git -C ~/waw-pinned rev-parse HEAD        # must print the sha you reviewed
+claude plugin uninstall waw@harness       # only when it was installed from GitHub
+claude plugin marketplace remove harness
+claude plugin marketplace add ~/waw-pinned
+claude plugin install waw@harness
+```
+
+Then keep auto-update off for `harness` (`/plugin` → Marketplaces → `harness`), start a new
+session, and check that `claude plugin list` shows waw from the local marketplace. Keep the
+checkout outside any worker's worktree, and let nothing else write to it.
+
+Upgrade: review the new commits, move the checkout, update.
+
+```sh
+git -C ~/waw-pinned fetch
+git -C ~/waw-pinned log --oneline HEAD..origin/main
+git -C ~/waw-pinned checkout --detach <new sha>
+claude plugin update waw@harness
+```
+
+The new revision loads with the next session, or at once with `/reload-plugins`.
+
+Roll back: `git -C ~/waw-pinned checkout --detach <previous sha>`, then
+`claude plugin update waw@harness` and a new session (or `/reload-plugins`).
+
 ## Remove it
 
 ```sh

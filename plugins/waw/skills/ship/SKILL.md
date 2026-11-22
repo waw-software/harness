@@ -73,8 +73,8 @@ One task is one branch in one worktree, shared by all its workers.
    - **S**: at most 2 files and ~50 changed lines, no risky zone (step 6), and every
      acceptance criterion provable by one command or one screen. No investigator: you locate
      the code with Explore and write the plan yourself. One developer, the review once. A
-     tester only when the change is visible to the user; otherwise you run the proving
-     command yourself and keep its output in `<dir>/evidence/`.
+     tester always: a short brief to run the proving command (never on the host yourself),
+     its output kept in `<dir>/evidence/`.
    - **L**: more than two slices, or a risky zone. The full flow below, with the plan review.
    - **M**: everything else. The flow below, without the plan review.
 
@@ -110,7 +110,7 @@ nothing. Decide the rest yourself and keep one line per decision.
    criterion has a proof. Size L (more than two slices or a risky zone): also run a reviewer
    on the plan (`plan-review-1`, brief: the task, the plan file, "review this plan").
 3. Show the plan in the chat, half a page at most:
-   - **Size**: S, M or L, and what that leaves out (for S: no investigator; a tester only for a change the user sees).
+   - **Size**: S, M or L, and what that leaves out (for S: no investigator; a tester always runs the proving command).
    - **Will do**: how the product behaves after the change, in the developer's terms.
    - **Will not do**: what someone could expect and will not get.
    - **Proof**: the acceptance criteria, each one a check that can fail, and for each how it
@@ -141,7 +141,7 @@ by wave (a wave = the slices whose dependencies are committed, at most 5):
 2. As each one reports, check it (the commander rules, "Checking what comes back"): only its files
    changed, the diff does what the brief asked, its tests ran and passed. Wrong or partial:
    a small exact fix (the commander rules) you make yourself; anything more goes back to it with a
-   fix brief (`dev-<slice>-fix1`). Right: commit exactly its files.
+   fix brief (`dev-<slice>-fix1`). Right: commit exactly its files (the commander rules, "Git in a worktree session").
 3. `out_of_scope_needs`: assign them to the slice that owns the file, or to a new slice.
 4. After the last wave, check the whole diff against the plan (`git diff <base>...HEAD
    --stat`, and read what the slices connect).
@@ -173,7 +173,7 @@ Start the tester and the review at the same time; they only read the code.
    and the full check. **One review round per task**: review again only when the first
    round found a blocker. What is still open goes into the report as it is.
 4. **Proof is complete** only when every criterion is proven by an e2e spec that asserts it
-   or by the tester on the running product (size S without a tester: the command you ran,
+   or by the tester on the running product (size S: the tester's command,
    its output in `<dir>/evidence/`), with evidence you opened. Never count a
    criterion as proven by code reading or unit tests alone; what could not be run goes
    under "Not covered".

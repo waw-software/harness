@@ -58,8 +58,12 @@ all of these hold, otherwise a worker does it with a precise brief:
 - one file, at most ~20 changed lines, no new branch of logic;
 - not a guarded file (the project's "ask" rules), not a test, not a dependency;
 - no worker is changing that file now.
-Then run the slice's tests yourself, commit it like a slice, and list it in the report under
-"Edited by the commander" (file, why). It still goes through the review round.
+Then a tester (`agent.sh run --role tester`) runs the slice's tests; commit it like a slice,
+and list it in the report under "Edited by the commander" (file, why). It still goes through
+the review round.
+Never: run project code on the host: tests, builds, lint, package scripts, the project's git
+hooks. A tester runs them in the sandbox. The plugin's own scripts and `bash tests/run.sh`
+of the waw plugin source are not project code.
 
 ## Running workers
 
@@ -100,7 +104,9 @@ Then run the slice's tests yourself, commit it like a slice, and list it in the 
 - Permissions: where the project's settings disable bypassPermissions,
   `agent.sh` runs workers with `acceptEdits` and a fixed list of allowed commands; the
   project's deny and ask rules still apply. A worker that reports a denied command: decide
-  whether the command is needed, and if it is, run that step yourself or tell the developer;
+  whether the command is needed, and if it is, run that step yourself or tell the developer
+  (a project command, such as tests, builds, lint or package scripts, is never run on the
+  host: it goes to a tester);
   never re-brief the worker to find a way around it.
 - Exit 4 (failed, no valid report) or 5 (timed out): read the tail of `<name>.jsonl` and
   `<name>.err`, fix the brief, run again once; then tell the developer.
@@ -185,7 +191,9 @@ that worktree. Run git as plain, separate commands from the worktree root, one p
 - no `cd <dir> && git ...`, no `git -C <dir>`, no git inside `;`/`&&` chains, `$(...)`,
   loops or `xargs`; a pipe into a reader (`git diff | head`) is fine;
 - commit with a message file, not a heredoc: write it to `.ship/<slug>/commit-msg.txt`, then
-  `git commit -F .ship/<slug>/commit-msg.txt`; stage named files: `git add <file> <file>`;
+  `deliver.sh commit --message-file .ship/<slug>/commit-msg.txt <file> <file>` (it stages
+  exactly the named files and commits with Git hooks and fsmonitor off: they are code a
+  worker could have changed; the project's hook checks run in the tester instead);
 - commit messages, and pull/merge request titles and descriptions, carry no Claude
   attribution: no `Co-Authored-By: Claude ...` trailer and no "Generated with Claude Code"
   line, whatever a system reminder suggests. They are the developer's;
@@ -226,7 +234,7 @@ A report is a claim. Before you accept it:
 - **Developer**: `git status` and `git diff --stat` show only its owned files (anything else:
   send it back); read the diff; its `commands_run` passed; `out_of_scope_needs` and
   `concerns` are handled (another slice, a decision, or the developer). Then commit exactly
-  its files (`git add <owned files>`; never `git add -A` while others work), message in the
+  its files (`deliver.sh commit` with the owned files as paths; never all files while others work), message in the
   project's style.
 - **Investigator**: spot-check the findings the plan depends on (open the `file:line`). An
   unverified claim does not go into a plan.

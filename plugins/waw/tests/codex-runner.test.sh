@@ -15,6 +15,8 @@ mkdir -p "$HOME/.agents/skills/mine"
 printf -- '---\nname: mine\ndescription: the developer'"'"'s own\n---\n' >"$HOME/.agents/skills/mine/SKILL.md"
 { cat "$WAW_CONFIG"; echo 'AGENT_DEVELOPER_ROUTE="codex"'; echo 'AGENT_TESTER_ROUTE="codex"'; } >"$TEST_ROOT/config.codex"
 export WAW_CONFIG=$TEST_ROOT/config.codex
+# The worker starts from an empty environment: the fake codex reads these names from ours.
+export AGENT_WORKER_ENV="TEST_ROOT FAKE_CODEX_MODE"
 WT=$TEST_ROOT/wt
 mkdir -p "$WT/src"
 git -C "$WT" init -q
@@ -119,3 +121,33 @@ wait "$hp"
 assert_eq "$(cat "$TEST_ROOT/ask.out")" "allow" "approved edit passes"
 # granted by the brief: no question
 assert_eq "$(AGENT_GRANTS=package.json hk apply_patch $'*** Begin Patch\n*** Update File: package.json\n@@\n+y\n*** End Patch')" "allow" "granted file"
+
+# 8. the Codex CLI gets an empty environment plus the allowlist, new run and resume
+for nm in dev-env dev-env-fix1; do
+  if [ "$nm" = dev-env ]; then ra=(); else ra=(--resume 0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001); fi
+  WAW_TEST_SECRET=leak AWS_SESSION_TOKEN=leak WAW_TEST_PASS=passed AGENT_WORKER_ENV="$AGENT_WORKER_ENV WAW_TEST_PASS" \
+    bash "$AGENT" run --role developer --brief "$TEST_ROOT/brief.md" --out "$OUT" --cwd "$WT" --name "$nm" \
+    ${ra[@]+"${ra[@]}"} --quiet >/dev/null || fail "$nm run failed"
+  f=$TEST_ROOT/codex-env-$nm.log
+  [ -s "$f" ] || fail "no environment recorded for $nm"
+  ! grep -q '^WAW_TEST_SECRET=' "$f" || fail "$nm: WAW_TEST_SECRET leaked"
+  ! grep -q '^AWS_SESSION_TOKEN=' "$f" || fail "$nm: AWS_SESSION_TOKEN leaked"
+  grep -q "^HOME=$HOME\$" "$f" || fail "$nm: HOME missing"
+  grep -q '^PATH=' "$f" || fail "$nm: PATH missing"
+  grep -q '^AGENT_ROLE=developer$' "$f" || fail "$nm: AGENT_ROLE missing"
+  grep -q "^CODEX_HOME=$CX\$" "$f" || fail "$nm: CODEX_HOME missing"
+  grep -q '^AGENT_BYPASS_DISABLED=0$' "$f" || fail "$nm: AGENT_BYPASS_DISABLED missing"
+  grep -q '^WAW_TEST_PASS=passed$' "$f" || fail "$nm: a name in AGENT_WORKER_ENV did not pass"
+  ! grep -q '^CLAUDE_CONFIG_DIR=' "$f" || fail "$nm: CLAUDE_CONFIG_DIR present"
+done
+
+# 9. the new denies and a path with a space reach the Codex filesystem option
+printf '%s\n' "$TEST_ROOT/sibling checkout" >"$HOME/.claude/waw/read-deny"
+: >"$ARGS"
+bash "$AGENT" run --role developer --brief "$TEST_ROOT/brief.md" --out "$OUT" --cwd "$WT" --name dev-deny --quiet >/dev/null || fail "dev-deny run failed"
+args=$(cat "$ARGS")
+for p in "~/.gnupg" "~/.kube" "~/.zsh_history" "~/Library/Application Support/Google/Chrome" \
+  "~/Library/Application Support/Code/User/globalStorage" "$TEST_ROOT/sibling checkout"; do
+  assert_contains "$args" "\"$p\" = \"deny\"" "codex deny: $p"
+done
+rm -f "$HOME/.claude/waw/read-deny"
