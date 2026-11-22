@@ -133,7 +133,29 @@ case_no_lockfile() {
   assert_eq "$(calls)" "0" "pnpm not called"
 }
 
+case_symlinked_log_refused() {
+  local d; d=$(make_clone symlog) || fail "fixture"
+  printf 'precious\n' >"$TEST_ROOT/victim" || fail "fixture: victim"
+  mkdir -p "$d/.ship" && ln -s "$TEST_ROOT/victim" "$d/.ship/deps.log" || fail "fixture: symlink"
+  run_deps "$d"
+  assert_eq "$RC" "3" "symlinked log exit: $OUT"
+  assert_contains "$OUT" "is a symlink" "message"
+  assert_eq "$(cat "$TEST_ROOT/victim")" "precious" "victim unchanged"
+  assert_eq "$(calls)" "0" "pnpm not called"
+}
+
+case_symlinked_ship_refused() {
+  local d; d=$(make_clone symship) || fail "fixture"
+  mkdir -p "$TEST_ROOT/elsewhere" && ln -s "$TEST_ROOT/elsewhere" "$d/.ship" || fail "fixture: symlink"
+  run_deps "$d"
+  assert_eq "$RC" "3" "symlinked .ship exit: $OUT"
+  assert_eq "$(calls)" "0" "pnpm not called"
+  assert_eq "$(ls -A "$TEST_ROOT/elsewhere" | wc -l | tr -d ' ')" "0" "nothing written through the link"
+}
+
 case_clean_base_installs
+case_symlinked_log_refused
+case_symlinked_ship_refused
 case_commit_beyond_base_refused
 case_modified_file_refused
 case_untracked_file_refused
@@ -142,4 +164,4 @@ case_ship_dir_ignored
 case_explicit_base
 case_fresh_deps_skip
 case_no_lockfile
-printf 'deps-security.test.sh: all nine cases passed\n'
+printf 'deps-security.test.sh: all eleven cases passed\n'

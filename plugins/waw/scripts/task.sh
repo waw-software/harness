@@ -355,9 +355,13 @@ do_deps() {
     break
   done <<<"$status"
   [ -z "$first" ] || die 3 "deps: the worktree has changes ($first): install only on the untouched base"
-  mkdir -p "$root/.ship"
-  (cd "$root" && keep_out_of_git)
   log=$root/.ship/deps.log
+  if [ -L "$root/.ship" ] || [ -L "$log" ]; then
+    die 3 "deps: $root/.ship or its log is a symlink"
+  fi
+  (cd "$root" && keep_out_of_git)
+  mkdir -p "$root/.ship"
+  rm -f "$log"
   echo "deps: $cmd in $root (log: $log)"
   # shellcheck disable=SC2086 # cmd is one of the fixed commands above
   if (cd "$root" && $cmd) >"$log" 2>&1; then
