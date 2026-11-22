@@ -104,6 +104,19 @@ case_hidden_in_substitution() {
   run_bash 'echo "a $(echo "b; c") d"; deliver.sh push'; assert_eq "$hrc" 2 "nested quotes then a real call"
   run_bash 'echo "$(ls)" "x; deliver.sh"'; assert_eq "$hrc" 0 "second argument is quoted text"
 }
+case_splitter_evasions() {
+  run_bash $'ls; \\\ndeliver.sh push'; assert_eq "$hrc" 2 "line continuation"
+  run_bash 'X="a b" deliver.sh push'; assert_eq "$hrc" 2 "quoted assignment with a space"
+  run_bash "X='a;b' task.sh open x"; assert_eq "$hrc" 2 "quoted assignment with a semicolon"
+  run_bash 'X="deliver.sh push" echo hi'; assert_eq "$hrc" 0 "assignment value is text"
+  run_bash 'echo a\ #; deliver.sh push'; assert_eq "$hrc" 2 "# after an escaped space"
+}
+case_settings_case_insensitive() {
+  dev Write "$SCOPE/.claude/Settings.json" 2
+  dev Write "$SCOPE/.CLAUDE/hooks/x" 2
+  dev Write "$SCOPE/.MCP.json" 2
+  T_GRANTS=.claude/settings.json dev Write "$SCOPE/.claude/SETTINGS.json" 0
+}
 case_python39_compatible() {
   if [ ! -x /usr/bin/python3 ]; then
     printf 'case_python39_compatible: skipped, /usr/bin/python3 is missing\n'
@@ -156,6 +169,8 @@ case_quoted_search_argument
 case_direct_and_chained_commands
 case_hidden_commands
 case_hidden_in_substitution
+case_splitter_evasions
+case_settings_case_insensitive
 case_python39_compatible
 case_ship_symlink_out
 case_run_dir_redirected

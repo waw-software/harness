@@ -114,14 +114,19 @@ physical_path() {
 # protected_write <file>: the physical target is one of the project files that run code for
 # the next worker (settings, hooks, MCP servers) and is not listed in AGENT_GRANTS.
 protected_write() {
+  # Compared lowercased: macOS volumes are case-insensitive (.claude/SETTINGS.json is the same file).
   local pf ps t pt g rel
   pf=$(physical_path "$1") || return 1
   ps=$(physical_path "$scope") || return 1
+  pf=$(printf '%s' "$pf" | tr '[:upper:]' '[:lower:]')
+  ps=$(printf '%s' "$ps" | tr '[:upper:]' '[:lower:]')
   for t in .claude/settings.json .claude/settings.local.json .claude/hooks .mcp.json; do
     pt=$(physical_path "$scope/$t") || continue
+    pt=$(printf '%s' "$pt" | tr '[:upper:]' '[:lower:]')
     case $pf in "$pt" | "$pt"/*) ;; *) continue ;; esac
     rel=${pf#"$ps"/}
     for g in ${AGENT_GRANTS:-}; do
+      g=$(printf '%s' "$g" | tr '[:upper:]' '[:lower:]')
       [ "$g" = "$rel" ] && return 1
     done
     return 0
@@ -172,14 +177,29 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null) || e
 # starts with echo.
 split_commands() {
   python3 -I -c '
-import sys
+import re, shlex, sys
 t = sys.argv[1]
+
+def words(seg):
+    # Real words of a segment: quotes removed, whitespace inside a word made "_", leading
+    # NAME=value assignments dropped, so the first word is the command.
+    try:
+        toks = shlex.split(seg, posix=True)
+    except ValueError:
+        return seg
+    while toks and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+        toks.pop(0)
+    return " ".join(re.sub(r"\s+", "_", w) for w in toks)
+
 out, cur = [], []
 q = None
 stack = []  # [saved quote state, "(" or "`", paren depth] of each open substitution
 i, n = 0, len(t)
 while i < n:
     c = t[i]
+    if q != "\x27" and c == "\\" and t[i + 1:i + 2] == "\n":
+        i += 2
+        continue
     if q == "\x27":
         cur.append(c)
         if c == q:
@@ -205,7 +225,7 @@ while i < n:
     elif c in "\x27\"":
         q = c
         cur.append(c)
-    elif c == "#" and (i == 0 or t[i - 1] in " \t\n"):
+    elif c == "#" and (i == 0 or (t[i - 1] in " \t\n" and t[i - 2:i - 1] != "\\")):
         while i < n and t[i] != "\n":
             i += 1
         continue
@@ -225,7 +245,7 @@ while i < n:
         cur.append(c)
     i += 1
 out.append("".join(cur))
-print("\n".join(s.replace("\n", " ") for s in out))
+print("\n".join(words(s).replace("\n", " ") for s in out))
 ' "$1"
 }
 segments=$(split_commands "$cmd" 2>/dev/null) ||
