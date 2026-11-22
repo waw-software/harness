@@ -674,6 +674,7 @@ uninstall() {
     if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f" && echo "rule removed: $f"; fi
   done
   rmdir "$CONFIG_DIR/rules/waw" 2>/dev/null || true
+  rmdir "$CONFIG_DIR/rules" 2>/dev/null || true # only when empty: nothing of yours is in it
 
   # Settings: what apply set, back to what was there, unless the developer changed it since.
   f=$CONFIG_DIR/settings.json
