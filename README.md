@@ -16,6 +16,8 @@ claude plugin install waw@harness
 Update: `/plugin` → Marketplaces → `harness` → auto-update on, or
 `claude plugin update waw@harness` (details:
 [plugins/waw/README.md](plugins/waw/README.md#update)).
+To keep a machine on a reviewed commit instead, see
+[Pin a machine](plugins/waw/README.md#pin-a-machine-to-a-reviewed-revision).
 
 ## Try it without touching your own setup
 
