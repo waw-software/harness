@@ -278,6 +278,29 @@ case_unwritable_parent_fails() {
     "no worktree was registered"
 }
 
+case_worktree_creation_runs_no_hook() {
+  local c=$CASES/c9 origin main out rc repo marker
+  origin=$c/origin main=$c/main-nine marker=$c/hook-ran
+  setup_repo "$origin" "$main" main || fail "fixture: setup_repo"
+  mkdir -p "$main/.husky" || fail "fixture: .husky"
+  printf '#!/bin/sh\necho ran >> "%s"\n' "$marker" >"$main/.husky/post-checkout" || fail "fixture: hook"
+  chmod 755 "$main/.husky/post-checkout"
+  git -C "$main" add .husky || fail "fixture: add hook"
+  git -C "$main" commit -q -m hook || fail "fixture: commit hook"
+  git -C "$main" push -q origin main || fail "fixture: push hook"
+  git -C "$main" config core.hooksPath .husky || fail "fixture: hooksPath"
+  repo=$(basename "$main")
+  out=$(cd "$main" && bash "$TASK" prepare hooked 2>"$c/err"); rc=$?
+  assert_eq "$rc" "0" "prepare exit: $(cat "$c/err")"
+  assert_eq "$out" "path $AGENTIC_WORKTREES/$repo/hooked" "prepare output"
+  [ -f "$AGENTIC_WORKTREES/$repo/hooked/.husky/post-checkout" ] || fail "the worktree was not created"
+  absent "$marker"
+  out=$(cd "$main" && bash "$TASK" open hookedopen 2>"$c/err2"); rc=$?
+  assert_eq "$rc" "0" "open exit: $(cat "$c/err2")"
+  [ -f "$AGENTIC_WORKTREES/$repo/hookedopen/.husky/post-checkout" ] || fail "the open worktree was not created"
+  absent "$marker"
+}
+
 case_detached_origin_default
 case_fatal_fetch
 case_collision_suffixes
@@ -286,4 +309,5 @@ case_no_other_workflow
 case_open_regression
 case_default_changed_after_clone
 case_unwritable_parent_fails
-printf 'prepare.test.sh: all eight cases passed\n'
+case_worktree_creation_runs_no_hook
+printf 'prepare.test.sh: all nine cases passed\n'

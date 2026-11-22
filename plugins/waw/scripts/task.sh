@@ -87,6 +87,12 @@ default_branch() {
   return 0
 }
 
+# checkout_git <git args>: git for a call that checks out files (worktree add): the
+# repository's hooks (post-checkout) and fsmonitor program must not run on the host.
+checkout_git() {
+  git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+}
+
 # orca_cli: print the Orca command when this session runs inside Orca.
 orca_cli() {
   [ -z "${AGENTIC_NO_ORCA:-}" ] || return 1
@@ -164,7 +170,7 @@ do_open() {
   done
   dest=${AGENTIC_WORKTREES:-$HOME/worktrees}/$repo/$name
   mkdir -p "$(dirname "$dest")" || die 3 "cannot create $(dirname "$dest")"
-  git -C "$root" worktree add -q -b "$branch" "$dest" "$base" >&2 || die 3 "git worktree add failed"
+  checkout_git -C "$root" worktree add -q -b "$branch" "$dest" "$base" >&2 || die 3 "git worktree add failed"
   copy_run_files "$top" "$slug" "$dest"
   printf 'path %s\n' "$(cd "$dest" && pwd -P)"
 }
@@ -216,7 +222,7 @@ do_prepare() {
   done
   dest=$wtroot/$repo/$name
   keep_out_of_git
-  git -C "$root" worktree add --detach "$dest" "origin/$def" >&2 ||
+  checkout_git -C "$root" worktree add --detach "$dest" "origin/$def" >&2 ||
     { rmdir "$dest" 2>/dev/null; die 3 "git worktree add failed for $dest"; }
   printf 'path %s\n' "$(cd "$dest" && pwd -P)"
 }

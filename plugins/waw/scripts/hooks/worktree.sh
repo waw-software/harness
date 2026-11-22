@@ -35,6 +35,12 @@ if [ -z "$mode" ]; then
   esac
 fi
 
+# checkout_git <git args>: git for a call that checks out files (worktree add): the
+# repository's hooks (post-checkout) and fsmonitor program must not run on the host.
+checkout_git() {
+  git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+}
+
 # main_root <dir>: the main repository's top level (physical path), also from inside a
 # linked worktree.
 main_root() {
@@ -103,9 +109,9 @@ do_create() {
   fi
 
   if git -C "$root" show-ref -q --verify "refs/heads/$branch"; then
-    git -C "$root" worktree add "$dest" "$branch" >&2 2>&1 || die "git worktree add failed"
+    checkout_git -C "$root" worktree add "$dest" "$branch" >&2 2>&1 || die "git worktree add failed"
   else
-    git -C "$root" worktree add -b "$branch" "$dest" "$base" >&2 2>&1 || die "git worktree add failed"
+    checkout_git -C "$root" worktree add -b "$branch" "$dest" "$base" >&2 2>&1 || die "git worktree add failed"
   fi
   printf '%s\n' "$dest"
 }
