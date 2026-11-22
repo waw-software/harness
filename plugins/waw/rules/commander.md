@@ -104,7 +104,9 @@ of the waw plugin source are not project code.
 - Permissions: where the project's settings disable bypassPermissions,
   `agent.sh` runs workers with `acceptEdits` and a fixed list of allowed commands; the
   project's deny and ask rules still apply. A worker that reports a denied command: decide
-  whether the command is needed, and if it is, run that step yourself or tell the developer;
+  whether the command is needed, and if it is, run that step yourself or tell the developer
+  (a project command, such as tests, builds, lint or package scripts, is never run on the
+  host: it goes to a tester);
   never re-brief the worker to find a way around it.
 - Exit 4 (failed, no valid report) or 5 (timed out): read the tail of `<name>.jsonl` and
   `<name>.err`, fix the brief, run again once; then tell the developer.

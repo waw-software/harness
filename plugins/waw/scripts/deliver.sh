@@ -97,6 +97,17 @@ git_nohooks() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 lfs_upload() {
   git lfs version >/dev/null 2>&1 || return 0
   [ -n "$(git_nohooks ls-files ':(attr:filter=lfs)' | head -n 1)" ] || return 0
+  # .lfsconfig can point the upload at any endpoint: it must be the default branch's.
+  local top base head_cfg base_cfg wt_cfg=""
+  top=$(git rev-parse --show-toplevel)
+  base=$(git_nohooks rev-parse -q --verify "refs/remotes/origin/HEAD" 2>/dev/null ||
+    git_nohooks rev-parse -q --verify "refs/remotes/origin/main" 2>/dev/null || true)
+  head_cfg=$(git_nohooks rev-parse -q --verify "HEAD:.lfsconfig" 2>/dev/null || true)
+  base_cfg=""
+  [ -z "$base" ] || base_cfg=$(git_nohooks rev-parse -q --verify "$base:.lfsconfig" 2>/dev/null || true)
+  [ ! -f "$top/.lfsconfig" ] || wt_cfg=$(git_nohooks hash-object --no-filters "$top/.lfsconfig")
+  [ "$head_cfg" = "$base_cfg" ] && [ "$wt_cfg" = "$head_cfg" ] ||
+    die 3 "deliver: .lfsconfig changed on this branch: the LFS endpoint must come from the default branch; ask the developer"
   echo "deliver: git lfs push origin $branch"
   git_nohooks lfs push origin "$branch" || die 1 "git lfs push failed"
 }
@@ -189,9 +200,10 @@ case $cmd in
       esac
     done
     [ -n "$msgfile" ] && [ -r "$msgfile" ] && [ $# -ge 1 ] || usage
+    for p in "$@"; do [ ! -d "$p" ] || usage; done
     check_branch
-    git_nohooks add -- "$@" || die 1 "git add failed"
-    git_nohooks commit -F "$msgfile" -- "$@" || die 1 "git commit failed"
+    git_nohooks --literal-pathspecs add -- "$@" || die 1 "git add failed"
+    git_nohooks --literal-pathspecs commit -F "$msgfile" -- "$@" || die 1 "git commit failed"
     echo "deliver: commit $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
     ;;
   *) usage ;;

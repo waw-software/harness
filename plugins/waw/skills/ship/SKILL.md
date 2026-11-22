@@ -110,7 +110,7 @@ nothing. Decide the rest yourself and keep one line per decision.
    criterion has a proof. Size L (more than two slices or a risky zone): also run a reviewer
    on the plan (`plan-review-1`, brief: the task, the plan file, "review this plan").
 3. Show the plan in the chat, half a page at most:
-   - **Size**: S, M or L, and what that leaves out (for S: no investigator; a tester only for a change the user sees).
+   - **Size**: S, M or L, and what that leaves out (for S: no investigator; a tester always runs the proving command).
    - **Will do**: how the product behaves after the change, in the developer's terms.
    - **Will not do**: what someone could expect and will not get.
    - **Proof**: the acceptance criteria, each one a check that can fail, and for each how it
