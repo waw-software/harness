@@ -159,8 +159,9 @@ case_read_deny_file() {
   assert_exit 0 run_worker sb-rd developer "$cwd"
   s=$(settings_of sb-rd)
   printf '%s' "$s" | jq -e --arg p "$TEST_ROOT/sibling checkout" '(.sandbox.filesystem.denyRead | index($p)) != null
-    and (.permissions.deny | index("Read(\($p)/**)")) != null' >/dev/null || fail "read-deny line with a space missing"
+    and (.permissions.deny | index("Read(/\($p)/**)")) != null and (.permissions.deny | index("Read(/\($p))")) != null' >/dev/null || fail "read-deny line with a space missing (absolute: //path in permissions.deny)"
   printf '%s' "$s" | jq -e '.sandbox.filesystem.denyRead | index("~/other-repo") != null' >/dev/null || fail "~/ read-deny line missing"
+  printf '%s' "$s" | jq -e '(.permissions.deny | index("Read(~/other-repo/**)")) != null' >/dev/null || fail "~/ entry must stay Read(~/...)"
   printf '%s' "$s" | jq -e --arg c "$cwd" '.sandbox.filesystem.denyRead | index($c) == null' >/dev/null || fail "the worktree itself was denied"
   printf '%s' "$s" | jq -e --arg c "$ROOT" '.sandbox.filesystem.denyRead | index($c) == null' >/dev/null || fail "a parent of the worktree was denied"
   err=$(cat "$ROOT/sb-rd.err")
@@ -183,6 +184,16 @@ case_parent_env_allowlist() {
   grep -q '^WAW_TEST_PASS=passed$' "$f" || fail "a name in AGENT_WORKER_ENV did not pass"
 }
 
+case_proxy_credentials() {
+  local f=$TEST_ROOT/claude-env-sb-proxy.log
+  HTTPS_PROXY=http://u:p@proxy:3128 HTTP_PROXY=http://proxy:3128 assert_exit 0 run_worker sb-proxy developer "$ROOT/proxy"
+  ! grep -q '^HTTPS_PROXY=' "$f" || fail "a proxy value with credentials was passed by default"
+  grep -q '^HTTP_PROXY=http://proxy:3128$' "$f" || fail "a proxy value without credentials was not passed"
+  f=$TEST_ROOT/claude-env-sb-proxy2.log
+  HTTPS_PROXY=http://u:p@proxy:3128 AGENT_WORKER_ENV="$AGENT_WORKER_ENV HTTPS_PROXY" assert_exit 0 run_worker sb-proxy2 developer "$ROOT/proxy2"
+  grep -q '^HTTPS_PROXY=http://u:p@proxy:3128$' "$f" || fail "a proxy named in AGENT_WORKER_ENV was not passed"
+}
+
 case_developer_sandbox
 case_budget_in_real_dollars
 case_tester_and_install
@@ -193,4 +204,5 @@ case_space_path_denied
 case_new_default_denies
 case_read_deny_file
 case_parent_env_allowlist
-printf 'sandbox.test.sh: all ten cases passed\n'
+case_proxy_credentials
+printf 'sandbox.test.sh: all eleven cases passed\n'

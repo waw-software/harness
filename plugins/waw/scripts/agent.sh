@@ -387,7 +387,8 @@ worker_settings() {
     | {hooks: {PreToolUse: [
         {matcher: "Bash", hooks: [{type: "command", command: $g}, {type: "command", command: $pg}]},
         {matcher: "Edit|Write|NotebookEdit|MultiEdit", hooks: [{type: "command", command: $g}]}]},
-       permissions: {deny: [$sec[] | ("Read(\(.))", "Read(\(.)/**)")]}}
+       permissions: {deny: [$sec[] | (if startswith("/") then "/" + . else . end)
+         | ("Read(\(.))", "Read(\(.)/**)")]}}
     | if $sb == "off" then . else .sandbox = ({
         enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
         filesystem: {
@@ -1191,7 +1192,14 @@ while :; do
       HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy \
       NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR ${extra_names[@]+"${extra_names[@]}"}; do
       [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-      if [ -n "${!v+x}" ]; then worker_env+=("$v=${!v}"); fi
+      if [ -z "${!v+x}" ]; then continue; fi
+      # a proxy URL with credentials (scheme://user:pass@host) passes only when AGENT_WORKER_ENV names it
+      case $v in
+        HTTP_PROXY | HTTPS_PROXY | ALL_PROXY | http_proxy | https_proxy | all_proxy)
+          if [[ ${!v} =~ ://[^/@]*@ ]] && ! [[ " ${extra_names[*]:-} " == *" $v "* ]]; then continue; fi
+          ;;
+      esac
+      worker_env+=("$v=${!v}")
     done
     worker_env+=(WAW_HOME="$AS_HOME" AGENT_ROLE="$role" AGENT_NAME="$name" AGENT_SCOPE="$dir"
       AGENT_RUN_DIR="$out" AGENT_EVENTS="$events" AGENT_ALLOW_INSTALL="$allow_install"
