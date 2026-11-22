@@ -349,7 +349,7 @@ check_segment() {
 
 while IFS= read -r seg; do
   check_segment "$seg"
-done <<EOF
+done <<EOF || block "this command" "worker-guard could not check this command (its input could not be read): report this as BLOCKED to the commander."
 $segments
 EOF
 exit 0
