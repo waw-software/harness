@@ -13,6 +13,10 @@ claude plugin install waw@harness
 # then, in a new session: /configure
 ```
 
+Update: `/plugin` → Marketplaces → `harness` → auto-update on, or
+`claude plugin update waw@harness` (details:
+[plugins/waw/README.md](plugins/waw/README.md#update)).
+
 ## Try it without touching your own setup
 
 A separate Claude Code config dir works like another user: its own login, settings, plugins

@@ -60,6 +60,26 @@ Requirements: macOS (Seatbelt) or Linux (bubblewrap) for the worker sandbox, plu
   effort), and `<config>/waw/`. What it replaced is backed up in `<config>/waw/backups/`, and
   what it set is recorded in `<config>/waw/applied.json` for the uninstall.
 
+## Update
+
+The plugin has no fixed `version`: Claude Code takes the commit of `main` as the version, so
+every push is an update.
+
+- **Automatically** (recommended): `/plugin` → Marketplaces → `harness` → turn auto-update on.
+  Claude Code then checks it in the background (a few minutes after your first message).
+  Auto-update is off by default for marketplaces other than the official one.
+- **By hand**: `claude plugin update waw@harness`.
+
+The new version loads with the next session, or at once with `/reload-plugins`. On its first
+session start, waw itself:
+- points `<config>/waw/plugin` (used by the status line) at the new version;
+- refreshes the rules in `<config>/rules/waw/`. Claude Code may read them before the hook
+  runs, so a changed rule can take one more session;
+- rewrites the Codex route's `config.toml` and `hooks.json` on the next Codex worker run.
+
+Your choices, routes and logins in `<config>/waw/` stay. Run `/configure` again only when the
+changes ask for it (new route types or settings).
+
 ## Remove it
 
 ```sh
