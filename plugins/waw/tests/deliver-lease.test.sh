@@ -324,6 +324,54 @@ case_commit_needs_paths() {
   assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit"
 }
 
+case_commit_only_named_paths() {
+  new_case commit-only feat/c3
+  printf 'message\n' >"$C/msg.txt"
+  printf 'a\n' >"$C/clone/a.txt"
+  printf 'o\n' >"$C/clone/other.txt"
+  git -C "$C/clone" add other.txt
+  dsh "$C/clone" commit --message-file "$C/msg.txt" a.txt
+  assert_eq "$rc" 0 "commit succeeds"
+  assert_eq "$(git -C "$C/clone" show --name-only --format= HEAD)" "a.txt" "only the named path is committed"
+  assert_eq "$(git -C "$C/clone" diff --cached --name-only)" "other.txt" "the other staged file stays staged"
+}
+
+make_lfs() { # a fake git-lfs: records its argv, answers version
+  mkdir -p "$R/lfsbin"
+  cat >"$R/lfsbin/git-lfs" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$R/lfs.log"
+if [ "\$1" = version ]; then echo "git-lfs/3.0.0"; exit 0; fi
+exit 0
+EOF
+  chmod 755 "$R/lfsbin/git-lfs"
+}
+
+case_lfs_push_before_push() {
+  make_lfs
+  new_case lfs feat/l1
+  printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$C/clone/.gitattributes"
+  printf 'x\n' >"$C/clone/a.bin"
+  git -C "$C/clone" add .gitattributes a.bin
+  git -C "$C/clone" commit -q -m lfs
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 0 "push with lfs succeeds"
+  grep -Fqx 'push origin feat/l1' "$R/lfs.log" || fail "lfs push not run: [$(cat "$R/lfs.log")]"
+  local l p
+  l=$(grep -n -e ' lfs push origin feat/l1' "$GIT_LOG" | head -n 1 | cut -d: -f1)
+  p=$(grep -n -e ' push -u origin feat/l1' "$GIT_LOG" | head -n 1 | cut -d: -f1)
+  [ -n "$l" ] && [ -n "$p" ] && [ "$l" -lt "$p" ] || fail "lfs push did not come before the push: [$(cat "$GIT_LOG")]"
+  grep -Fq -e "$NOHOOKS lfs push" "$GIT_LOG" || fail "lfs push was not hooks-off: [$(cat "$GIT_LOG")]"
+
+  new_case lfs-none feat/l2
+  : >"$R/lfs.log"
+  PATH="$R/lfsbin:$PATH" dsh "$C/clone" push
+  assert_eq "$rc" 0 "push without lfs files succeeds"
+  grep -q '^push' "$R/lfs.log" && fail "lfs push ran without lfs files: [$(cat "$R/lfs.log")]"
+  return 0
+}
+
 case_first_push_requires_plain_mode
 case_rewritten_current_branch_with_pinned_lease
 case_stale_lease_preserves_remote_work
@@ -336,4 +384,6 @@ case_mr_push_hooks_disabled
 case_commit_hooks_disabled
 case_commit_refuses_protected
 case_commit_needs_paths
-printf 'deliver-lease.test.sh: all twelve cases passed\n'
+case_commit_only_named_paths
+case_lfs_push_before_push
+printf 'deliver-lease.test.sh: all fourteen cases passed\n'

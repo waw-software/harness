@@ -93,8 +93,17 @@ check_branch() {
 # a worker that changed it) controls, and this script runs on the host with the developer's rights.
 git_nohooks() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 
+# With hooks off the LFS pre-push upload does not run: do it here when the repository has LFS files.
+lfs_upload() {
+  git lfs version >/dev/null 2>&1 || return 0
+  [ -n "$(git_nohooks ls-files ':(attr:filter=lfs)' | head -n 1)" ] || return 0
+  echo "deliver: git lfs push origin $branch"
+  git_nohooks lfs push origin "$branch" || die 1 "git lfs push failed"
+}
+
 do_push() {
   check_branch
+  lfs_upload
   echo "deliver: git push -u origin $branch"
   git_nohooks push -u origin "$branch" || die 1 "push failed (a rejected non-fast-forward push is never forced: fetch, rebase or merge first, or ask the developer)"
 }
@@ -110,6 +119,7 @@ do_push_lease() {
   expected=$(git rev-parse --verify "refs/remotes/origin/$branch^{commit}") ||
     die 3 "$branch has no origin/$branch to lease: use deliver.sh push first"
   check_branch
+  lfs_upload
   echo "deliver: git push --force-with-lease=$branch:$expected origin HEAD:refs/heads/$branch"
   git_nohooks push "--force-with-lease=$branch:$expected" origin "HEAD:refs/heads/$branch" ||
     die 1 "lease push failed: origin/$branch has commits since the last fetch: fetch, inspect, rebase or merge first; never retried with force"
@@ -181,7 +191,7 @@ case $cmd in
     [ -n "$msgfile" ] && [ -r "$msgfile" ] && [ $# -ge 1 ] || usage
     check_branch
     git_nohooks add -- "$@" || die 1 "git add failed"
-    git_nohooks commit -F "$msgfile" || die 1 "git commit failed"
+    git_nohooks commit -F "$msgfile" -- "$@" || die 1 "git commit failed"
     echo "deliver: commit $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
     ;;
   *) usage ;;
