@@ -26,6 +26,8 @@ claude            # /login, then /configure, then a new session
 ```
 
 To remove it: `rm -rf ~/.claude-waw-try` (and the keychain items `/configure` added, if any).
+In your own config, `configure.sh uninstall` (or `--purge`) undoes what the plugin added; see
+[plugins/waw/README.md](plugins/waw/README.md#remove-it).
 
 From a clone of this repository, `test-config/claude-setup-test` does the same with the
 local copy (`~/.claude-setup-test`), for work on the plugin itself.

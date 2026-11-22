@@ -17,6 +17,17 @@
 #                                   <home>/backups/<time>/ and prints each change.
 #   configure.sh check              verify the setup: PASS, TODO (with the command that fixes it)
 #                                   or FAIL per item. Exit 0 when nothing is TODO or FAIL.
+#   configure.sh uninstall [--purge] [--keep-plugin]
+#                                   undo what the plugin and /configure added to this config:
+#                                   the rules (<config>/rules/waw/), and in settings.json the status
+#                                   line, the script permissions, the attribution, model and effort
+#                                   it set (back to what they were before, where you did not change
+#                                   them since; a backup goes to <config>/backups/); then
+#                                   `claude plugin uninstall waw@harness` and the marketplace,
+#                                   unless --keep-plugin. <home> (config, worker routes and their
+#                                   logins) stays for a reinstall; --purge logs the routes out and
+#                                   removes it too. Keychain items and ~/worktrees are never
+#                                   touched: it prints the commands for the keys.
 #   configure.sh ping <provider> <model>
 #                                   one tiny real call (a few tokens; on a gateway it costs a
 #                                   fraction of a cent) through a worker route or a review
@@ -36,6 +47,7 @@ AS_HOME=${WAW_HOME:-$CONFIG_DIR/waw}
 normpath() { printf '%s' "$1" | sed 's#//*#/#g; s#\(.\)/$#\1#'; }
 CONFIG_DIR=$(normpath "$CONFIG_DIR")
 AS_HOME=$(normpath "$AS_HOME")
+APPLIED=$AS_HOME/applied.json # what apply changed in settings.json, for uninstall
 ROLES="investigator developer reviewer tester"
 MODEL_RE='^[A-Za-z0-9._/:@+()# -]+$'
 NAME_RE='^[a-z0-9][a-z0-9-]{0,39}$'
@@ -482,12 +494,31 @@ apply() {
   backup "$f"
   [ -f "$f" ] || printf '{}\n' >"$f"
   jq -e 'type == "object"' "$f" >/dev/null 2>&1 || die 3 "$f is not a JSON object: fix it, then run apply again"
+  # What this changes, and what was there before (the first time), for `configure.sh uninstall`.
+  tmp=$(mktemp "$AS_HOME/.applied.XXXXXX")
+  # shellcheck disable=SC2086 # the rules have no spaces
+  jq -n --slurpfile c "$choices" --slurpfile o "$f" --slurpfile r <(cat "$APPLIED" 2>/dev/null || echo '{}') \
+    --arg sl "$AS_HOME/plugin/statusline.sh" --argjson perms "$(printf '%s\n' $PERMISSIONS | jq -R . | jq -s .)" '
+    ($c[0].settings // {}) as $s | $o[0] as $o | ($r[0] // {}) as $r
+    | def was($k): {had: ($o | has($k)), value: $o[$k]};
+      def first($rk; $k): if $r[$rk] then $r[$rk].before else was($k) end;
+    $r
+    | if $s.statusline == true then .statusLine = {set: {type: "command", command: ("\u0027" + $sl + "\u0027")}, before: first("statusLine"; "statusLine")} else . end
+    | if $s.permissions == true then .permissions_added = ((($r.permissions_added // []) + ($perms - ($o.permissions.allow // []))) | unique) else . end
+    | if $s.no_attribution == true then .attribution = {before: first("attribution"; "attribution"),
+        coauthored_before: (if $r.attribution then $r.attribution.coauthored_before else was("includeCoAuthoredBy") end)} else . end
+    | if ($s.model // "") != "" then .model = {set: $s.model, before: first("model"; "model")} else . end
+    | if ($s.model // "") != "" and ($s.effort // "") != "" then .effort = {model: $s.model, set: $s.effort,
+        before: (if $r.effort and $r.effort.model == $s.model then $r.effort.before
+          else {had: ($o.modelSettings[$s.model] | has("effortLevel")?) // false, value: $o.modelSettings[$s.model].effortLevel?} end)} else . end' \
+    >"$tmp" || { rm -f "$tmp"; die 3 "could not record the settings change"; }
+  mv -f "$tmp" "$APPLIED"
   tmp=$(mktemp "$CONFIG_DIR/.settings.XXXXXX")
   # shellcheck disable=SC2086 # the rules have no spaces
   jq --slurpfile c "$choices" --arg sl "$AS_HOME/plugin/statusline.sh" --argjson perms "$(printf '%s\n' $PERMISSIONS | jq -R . | jq -s .)" \
     '($c[0].settings // {}) as $s
     | if $s.statusline == true then .statusLine = {type: "command", command: ("\u0027" + $sl + "\u0027")} else . end
-    | if $s.permissions == true then .permissions.allow = (((.permissions.allow // []) + $perms) | unique) else . end
+    | if $s.permissions == true then .permissions.allow = ((.permissions.allow // []) + ($perms - (.permissions.allow // []))) else . end
     | if $s.no_attribution == true then .attribution = {commit: "", pr: ""} | .includeCoAuthoredBy = false else . end
     | if ($s.model // "") != "" then .model = $s.model else . end
     | if ($s.model // "") != "" and ($s.effort // "") != "" then .modelSettings[$s.model].effortLevel = $s.effort else . end' \
@@ -615,12 +646,114 @@ ping_() {
   return 1
 }
 
+uninstall() {
+  local purge=0 keep_plugin=0 f tmp d n item keys=() bak mod changed
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --purge) purge=1 ;;
+      --keep-plugin) keep_plugin=1 ;;
+      *) die 2 "usage: configure.sh uninstall [--purge] [--keep-plugin]" ;;
+    esac
+    shift
+  done
+
+  # Rules: the copies apply made (Claude Code loads them in every session).
+  for mod in commander git-delivery decisions jira-tickets; do
+    f=$CONFIG_DIR/rules/waw/$mod.md
+    if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f" && echo "rule removed: $f"; fi
+  done
+  rmdir "$CONFIG_DIR/rules/waw" 2>/dev/null || true
+
+  # Settings: what apply set, back to what was there, unless the developer changed it since.
+  f=$CONFIG_DIR/settings.json
+  if [ -f "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+    bak=$CONFIG_DIR/backups/waw-uninstall-$(stamp).settings.json
+    mkdir -p "$CONFIG_DIR/backups" && cp -p "$f" "$bak"
+    tmp=$(mktemp "$CONFIG_DIR/.settings.XXXXXX")
+    # shellcheck disable=SC2086 # the rules have no spaces
+    jq --slurpfile r <(cat "$APPLIED" 2>/dev/null || echo '{}') --arg sl "$AS_HOME/plugin/statusline.sh" \
+      --argjson ours "$(printf '%s\n' $PERMISSIONS | jq -R . | jq -s .)" '
+      ($r[0] // {}) as $r
+      | def restore($k; $b): if $b.had then .[$k] = $b.value else del(.[$k]) end;
+      (if $r.statusLine then (if .statusLine == $r.statusLine.set then restore("statusLine"; $r.statusLine.before) else . end)
+       elif ((.statusLine.command? // "") | contains($sl) or test("/waw/plugin/statusline\\.sh")) then del(.statusLine) else . end)
+      | (($r.permissions_added // $ours)) as $rm
+      | (if (.permissions.allow? | type) == "array" then .permissions.allow -= $rm
+          | (if .permissions.allow == [] then del(.permissions.allow) else . end)
+          | (if .permissions == {} then del(.permissions) else . end) else . end)
+      | (if $r.attribution and .attribution == {commit: "", pr: ""} then
+          restore("attribution"; $r.attribution.before) | restore("includeCoAuthoredBy"; $r.attribution.coauthored_before) else . end)
+      | (if $r.model and .model == $r.model.set then restore("model"; $r.model.before) else . end)
+      | (if $r.effort and (.modelSettings[$r.effort.model].effortLevel? == $r.effort.set) then
+          (if $r.effort.before.had then .modelSettings[$r.effort.model].effortLevel = $r.effort.before.value
+           else del(.modelSettings[$r.effort.model].effortLevel)
+             | (if .modelSettings[$r.effort.model] == {} then del(.modelSettings[$r.effort.model]) else . end)
+             | (if .modelSettings == {} then del(.modelSettings) else . end) end) else . end)' \
+      "$f" >"$tmp" || { rm -f "$tmp"; die 3 "could not update $f (unchanged; nothing else was done after the rules)"; }
+    if cmp -s <(jq -S . "$f") <(jq -S . "$tmp"); then
+      rm -f "$tmp" "$bak"
+      echo "settings: nothing of waw in $f"
+    else
+      changed=$(jq -rn --slurpfile a "$f" --slurpfile b "$tmp" '
+        [($a[0] | keys[]) as $k | select($a[0][$k] != $b[0][$k]) | $k] | join(", ")')
+      mv -f "$tmp" "$f"
+      echo "settings: $f ($changed restored or removed; backup: $bak)"
+    fi
+    if [ ! -f "$APPLIED" ] && jq -e '.attribution == {commit: "", pr: ""} or (.model // "" | length > 0)' "$f" >/dev/null 2>&1; then
+      echo "settings: attribution and model are left as they are (set before waw recorded its changes; yours to keep or remove)"
+    fi
+  fi
+  rm -f "$AS_HOME/plugin"
+
+  # Home: the config and the worker routes (with their logins), only with --purge.
+  if [ -d "$AS_HOME" ]; then
+    if [ "$purge" = 1 ]; then
+      case $AS_HOME in "$HOME" | / | "$CONFIG_DIR") die 3 "refusing to remove $AS_HOME" ;; esac
+      [ "${AS_HOME##*/}" = waw ] || [ -f "$AS_HOME/config" ] || die 3 "$AS_HOME does not look like a waw home: not removed"
+      for d in "$AS_HOME"/workers/*/; do
+        [ -d "$d" ] || continue
+        d=$(normpath "$d")
+        case ${d##*/} in
+          codex | codex-*)
+            if [ -f "$d/auth.json" ] && have codex; then CODEX_HOME=$d codex logout >/dev/null 2>&1 && echo "logged out: route ${d##*/} (Codex)"; fi ;;
+          *)
+            item=$(helper_item "$d/settings.json")
+            if [ -n "$item" ]; then keys+=("$item")
+            elif [ "$(logged_in "$d")" != no ]; then CLAUDE_CONFIG_DIR=$d claude auth logout >/dev/null 2>&1 && echo "logged out: route ${d##*/} (Claude Code)"; fi ;;
+        esac
+      done
+      rm -rf "$AS_HOME" && echo "removed: $AS_HOME (config, worker routes, state, backups)"
+    else
+      echo "kept: $AS_HOME (config, worker routes and their logins; for a reinstall). --purge removes it."
+    fi
+  fi
+
+  # The plugin and its marketplace.
+  if [ "$keep_plugin" = 0 ]; then
+    if have claude; then
+      claude plugin uninstall waw@harness >/dev/null 2>&1 && echo "plugin: waw@harness uninstalled" ||
+        echo "plugin: not uninstalled here (another scope?): claude plugin uninstall waw@harness --scope project|local"
+      claude plugin marketplace remove harness >/dev/null 2>&1 && echo "marketplace: harness removed" || true
+    else
+      echo "plugin: run claude plugin uninstall waw@harness && claude plugin marketplace remove harness"
+    fi
+  fi
+
+  if [ "${#keys[@]}" -gt 0 ]; then
+    n=$(printf '%s\n' "${keys[@]}" | sort -u | tr '\n' ' ')
+    echo "keychain: the route keys are still there (other tools may use them): $n"
+    for item in $(printf '%s\n' "${keys[@]}" | sort -u); do echo "  security delete-generic-password -s $item"; done
+  fi
+  echo "not touched: worktrees in ~/worktrees, your CLAUDE.md, ~/.codex. Start a new session."
+}
+
 case $cmd in
   detect) detect ;;
   models) models "$@" ;;
   apply) apply "$@" ;;
   check) check ;;
   ping) ping_ "$@" ;;
+  uninstall) uninstall "$@" ;;
   -h | --help | "") awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "$0" ;;
   *) die 2 "unknown command: $cmd (see configure.sh --help)" ;;
 esac

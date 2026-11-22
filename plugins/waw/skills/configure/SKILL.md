@@ -1,6 +1,6 @@
 ---
 name: configure
-description: Set up or change the waw plugin - check what is installed and logged in, pick the model of every worker role and of the code review, find the route each model can run through (Codex subscription, OpenRouter, opencode, nexos.ai, Anthropic, another gateway), then write the config, the worker routes, the commander rules and the settings. Use when the user types /configure, or asks to set up, re-configure or change the models or providers of this setup.
+description: Set up or change the waw plugin - check what is installed and logged in, pick the model of every worker role and of the code review, find the route each model can run through (Codex subscription, OpenRouter, opencode, nexos.ai, Anthropic, another gateway), then write the config, the worker routes, the commander rules and the settings. Use when the user types /configure, or asks to set up, re-configure or change the models or providers of this setup, or to remove or uninstall it.
 ---
 
 # configure
@@ -185,6 +185,17 @@ A failed ping: show the error line. A wrong model id: list the right ones with
 
 Say in two lines what is set (the model and route per role, the review order). The new rules
 load in a new session: tell the developer to start one (`/clear` is not enough for rules).
+
+## Remove (when the developer asks to remove or uninstall waw)
+
+One question: keep `<home>` (the config and the worker routes with their logins, for a
+reinstall) (Recommended), or purge it (logs every route out, removes `<home>`). Then run
+`configure.sh uninstall` or `configure.sh uninstall --purge` and show its output as it is. It
+removes the rules, puts back the settings apply changed (unless the developer changed them
+since), and uninstalls the plugin and the marketplace. Keychain items stay: show the
+`security delete-generic-password` lines it printed, and do not run them unless asked. Then
+tell the developer to start a new session: the current one still has the rules and the
+plugin loaded.
 
 ## Choices file
 

@@ -141,8 +141,51 @@ EOF
   assert_contains "$out" "logged in" "check sees it with WAW_HOME spelled with a slash"
 }
 
+# uninstall: what apply added goes, what the developer had stays (byte for byte, as JSON);
+# --purge logs the routes out and removes the home; the plugin is uninstalled through claude.
+case_uninstall() (
+  local C=$ROOT/u-cfg b=$ROOT/u-bin orig x
+  export CLAUDE_CONFIG_DIR=$C
+  local UH=$C/waw
+  mkdir -p "$C" "$b"
+  for x in gh glab orca pnpm npm yarn opencode security; do printf '#!/bin/sh\nexit 1\n' >"$b/$x"; done
+  printf '#!/bin/sh\necho "codex $*" >>"%s/calls"\nexit 0\n' "$ROOT" >"$b/codex"
+  printf '#!/bin/sh\necho "claude $*" >>"%s/calls"\n[ "$1 $2" = "auth status" ] && echo "{\\"loggedIn\\":true}"\nexit 0\n' "$ROOT" >"$b/claude"
+  chmod 755 "$b"/*
+  export PATH="$b:$PATH"
+  orig='{"theme":"dark","model":"claude-x","statusLine":{"type":"command","command":"mine"},"permissions":{"allow":["Read","Bash(agent.sh:*)"]},"modelSettings":{"claude-opus-5-5":{"effortLevel":"low"}}}'
+  printf '%s\n' "$orig" >"$C/settings.json"
+  choices "$ROOT/u.json" true
+  jq '.routes.codex = {"type": "codex"}' "$ROOT/u.json" >"$ROOT/u2.json"
+  assert_exit 0 bash "$CONF" apply "$ROOT/u2.json"
+  bash "$CONF" apply "$ROOT/u2.json" >/dev/null || fail "second apply failed"
+  assert_eq "$(jq -r .model "$C/settings.json")" "claude-opus-5-5" "apply set the model"
+  printf '{}\n' >"$UH/workers/codex/auth.json"
+  out=$(bash "$CONF" uninstall --keep-plugin) || fail "uninstall failed: $out"
+  assert_eq "$(jq -S -c . "$C/settings.json")" "$(printf '%s' "$orig" | jq -S -c .)" "settings back to what they were"
+  [ ! -e "$C/rules/waw" ] || fail "rules left: $(ls "$C/rules/waw")"
+  [ -f "$UH/config" ] || fail "home removed without --purge"
+  [ ! -e "$UH/plugin" ] || fail "plugin link left"
+  ls "$C"/backups/waw-uninstall-*.settings.json >/dev/null 2>&1 || fail "no settings backup"
+  if grep -q 'plugin uninstall' "$ROOT/calls" 2>/dev/null; then fail "--keep-plugin uninstalled the plugin"; fi
+  # A setting the developer changed after apply is theirs: it stays.
+  bash "$CONF" apply "$ROOT/u2.json" >/dev/null || fail "apply after uninstall failed"
+  jq '.model = "mine-now"' "$C/settings.json" >"$C/s.tmp" && mv "$C/s.tmp" "$C/settings.json"
+  out=$(bash "$CONF" uninstall --purge) || fail "uninstall --purge failed: $out"
+  assert_eq "$(jq -r .model "$C/settings.json")" "mine-now" "a model changed since apply stays"
+  assert_eq "$(jq -r .statusLine.command "$C/settings.json")" "mine" "own status line back"
+  [ ! -e "$UH" ] || fail "--purge left $UH"
+  assert_contains "$(cat "$ROOT/calls")" "codex logout" "codex route logged out"
+  assert_contains "$(cat "$ROOT/calls")" "claude auth logout" "claude route logged out"
+  assert_contains "$(cat "$ROOT/calls")" "claude plugin uninstall waw@harness" "plugin uninstalled"
+  assert_contains "$(cat "$ROOT/calls")" "claude plugin marketplace remove harness" "marketplace removed"
+  assert_contains "$out" "security delete-generic-password -s gw-key" "keychain items listed, not deleted"
+  if grep -q '^security' "$ROOT/calls" 2>/dev/null; then fail "uninstall touched the keychain"; fi
+)
+
 case_apply
 case_module_off_and_idempotent
 case_bad_choices_write_nothing
 case_codex_route
 case_login_path
+case_uninstall

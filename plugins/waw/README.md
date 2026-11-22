@@ -48,6 +48,32 @@ Requirements: macOS (Seatbelt) or Linux (bubblewrap) for the worker sandbox, plu
 - `<config>/waw/plugin`: a link to the installed plugin version. The session-start
   hook keeps it current.
 
+## What changes when you install it
+
+- **At install** (before `/configure`), in every session of this config: the push guard (no
+  merges, force pushes or pushes to the default branch from Claude's Bash), worktrees in
+  `~/worktrees/<repo>/<name>`, a short note at session start, the skills and `bin/` on the
+  Bash tool's PATH.
+- **After `/configure`**: the commander rules in `<config>/rules/waw/` (loaded in every
+  session, next to your `CLAUDE.md`, which is not touched), the settings you picked in
+  `<config>/settings.json` (status line, script permissions, no attribution, model and
+  effort), and `<config>/waw/`. What it replaced is backed up in `<config>/waw/backups/`, and
+  what it set is recorded in `<config>/waw/applied.json` for the uninstall.
+
+## Remove it
+
+```sh
+configure.sh uninstall            # rules, settings it set, the plugin and its marketplace
+configure.sh uninstall --purge    # also logs the worker routes out and removes <config>/waw
+```
+
+Run it from a session with the plugin (`! configure.sh uninstall`), or ask Claude to remove
+waw. It puts back the settings it changed, as they were before, unless you changed them
+since (a backup goes to `<config>/backups/`). It never deletes keychain items (it prints the
+commands) or worktrees. Without the plugin installed:
+`rm -rf <config>/rules/waw`, and remove the status line and the `agent.sh`/`attack.sh`/...
+permissions from `<config>/settings.json` by hand.
+
 ## Develop
 
 ```sh
