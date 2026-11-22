@@ -1,0 +1,14 @@
+{
+  "name": "harness",
+  "description": "waw-software harness: the commander + workers setup for Claude Code",
+  "owner": {
+    "name": "waw-software"
+  },
+  "plugins": [
+    {
+      "name": "waw",
+      "source": "./plugins/waw",
+      "description": "Commander + workers: /ship, /auto-pilot, /brainstorm, /task-cost and /configure, worker guards and sandbox, cross-model review"
+    }
+  ]
+}

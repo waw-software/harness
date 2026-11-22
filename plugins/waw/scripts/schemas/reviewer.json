@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["verdict", "findings", "checked"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["approve", "changes_needed"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "location", "problem", "fix", "evidence"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "non-blocker"] },
+          "location": { "type": "string", "description": "file:line" },
+          "problem": { "type": "string" },
+          "fix": { "type": "string" },
+          "evidence": { "type": "string", "description": "what in the code proves it, checked by reading it" }
+        }
+      }
+    },
+    "checked": { "type": "array", "items": { "type": "string" }, "description": "what you reviewed: files, criteria, aspects" }
+  }
+}

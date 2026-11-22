@@ -1,0 +1,28 @@
+{
+  "name": "waw",
+  "displayName": "waw: commander + workers",
+  "version": "0.1.0",
+  "description": "The main session commands, workers do the work: /ship, /auto-pilot, /brainstorm, /task-cost, a push guard, worktrees, sandboxed workers on routes you pick (Claude Code on Anthropic, OpenCode Go, OpenRouter, nexos.ai or any Anthropic-compatible gateway; Codex on your ChatGPT plan) and cross-model review (Codex, opencode, gateways). Run /configure first.",
+  "author": {
+    "name": "waw-software"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "agents",
+    "review",
+    "sandbox",
+    "worktrees"
+  ],
+  "engines": {
+    "claude-code": ">=2.1.300"
+  },
+  "network": {
+    "hosts": [
+      "openrouter.ai",
+      "opencode.ai",
+      "api.nexos.ai"
+    ]
+  },
+  "repository": "https://github.com/waw-software/harness"
+}

@@ -1,0 +1,8 @@
+# The snapshot of the original setup the plugin was made from: kept locally, not published.
+/home/
+/workspace/
+/SNAPSHOT.md
+
+.DS_Store
+.ship/
+node_modules/

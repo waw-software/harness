@@ -1,0 +1,24 @@
+#!/bin/sh
+# claude-setup-test: Claude Code with a separate config dir that has only the waw
+# plugin (from the local marketplace in this repository). Your own ~/.claude is not touched.
+#
+#   claude-setup-test [claude args...]     e.g. claude-setup-test, claude-setup-test -p "..."
+#   claude-setup-test --setup              (re)install the plugin into the test config
+#
+# Config dir: CLAUDE_SETUP_TEST_DIR, default ~/.claude-setup-test. First run: /login.
+set -eu
+dir=${CLAUDE_SETUP_TEST_DIR:-$HOME/.claude-setup-test}
+repo=$(cd "$(dirname "$0")/.." && pwd)
+export CLAUDE_CONFIG_DIR="$dir"
+if [ "${1:-}" = --setup ] || [ ! -d "$dir/plugins" ]; then
+  mkdir -p "$dir"
+  claude plugin marketplace add "$repo" >/dev/null 2>&1 || claude plugin marketplace update harness >/dev/null
+  claude plugin install waw@harness
+  [ "${1:-}" != --setup ] || exit 0
+fi
+if [ $# -eq 0 ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then
+  echo "claude-setup-test: no terminal here (a ! command in Claude Code has none)." >&2
+  echo "Run it in your own terminal: $0" >&2
+  exit 2
+fi
+exec claude "$@"

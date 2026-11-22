@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "required": ["status", "summary", "files_changed", "commands_run", "out_of_scope_needs", "concerns"],
+  "properties": {
+    "status": { "type": "string", "enum": ["done", "partial", "blocked"] },
+    "summary": { "type": "string", "description": "What now works, in two or three sentences." },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "change"],
+        "properties": { "path": { "type": "string" }, "change": { "type": "string" } }
+      }
+    },
+    "tests_added": { "type": "array", "items": { "type": "string" }, "description": "test names or file:test, each seen failing before the change" },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "result"],
+        "properties": {
+          "command": { "type": "string" },
+          "result": { "type": "string", "enum": ["pass", "fail"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "out_of_scope_needs": { "type": "array", "items": { "type": "string" }, "description": "changes needed outside your owned files, which you did NOT make" },
+    "blocker": { "type": "string", "description": "when status is blocked or partial: what stopped you and what you need" },
+    "concerns": { "type": "array", "items": { "type": "string" } }
+  }
+}

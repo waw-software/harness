@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "required": ["summary", "findings", "relevant_files", "open_questions", "files_written"],
+  "properties": {
+    "summary": { "type": "string", "description": "The answer to the brief in a few sentences." },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic", "detail", "evidence"],
+        "properties": {
+          "topic": { "type": "string" },
+          "detail": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" }, "description": "file:line references or commands with their output that prove it" }
+        }
+      }
+    },
+    "relevant_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "why"],
+        "properties": { "path": { "type": "string" }, "why": { "type": "string" } }
+      }
+    },
+    "current_behaviour": { "type": "string" },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "object",
+      "description": "How the project is verified: commands for the full check, unit tests, lint, e2e.",
+      "properties": {
+        "full_check": { "type": "string" },
+        "unit_tests": { "type": "string" },
+        "e2e": { "type": "string" },
+        "relevant_e2e_specs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question", "options", "recommendation"],
+        "properties": {
+          "question": { "type": "string" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "recommendation": { "type": "string" }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "description": "Only when the brief asks for a plan.",
+      "required": ["approach", "slices"],
+      "properties": {
+        "approach": { "type": "string" },
+        "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+        "slices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "goal", "owned_files", "depends_on", "tests_first", "steps"],
+            "properties": {
+              "id": { "type": "string" },
+              "goal": { "type": "string" },
+              "owned_files": { "type": "array", "items": { "type": "string" }, "description": "every file this slice creates or changes; no file appears in two slices" },
+              "depends_on": { "type": "array", "items": { "type": "string" } },
+              "interfaces": { "type": "string", "description": "signatures, types or contracts other slices rely on" },
+              "tests_first": { "type": "array", "items": { "type": "string" } },
+              "steps": { "type": "array", "items": { "type": "string" } },
+              "estimated_lines": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "files_written": { "type": "array", "items": { "type": "string" }, "description": "files the brief asked you to write (drafts, notes), empty otherwise" }
+  }
+}

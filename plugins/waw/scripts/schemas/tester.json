@@ -1,0 +1,70 @@
+{
+  "type": "object",
+  "required": ["status", "checks", "criteria", "not_covered", "bugs"],
+  "properties": {
+    "status": { "type": "string", "enum": ["pass", "fail", "blocked"] },
+    "checks": {
+      "type": "array",
+      "description": "the project's checks: full check, unit tests, lint, type check, e2e suites",
+      "items": {
+        "type": "object",
+        "required": ["name", "command", "result"],
+        "properties": {
+          "name": { "type": "string" },
+          "command": { "type": "string" },
+          "result": { "type": "string", "enum": ["pass", "fail", "not_run"] },
+          "note": { "type": "string", "description": "for a failure: the failing test and the key error lines" }
+        }
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "method", "result", "evidence"],
+        "properties": {
+          "criterion": { "type": "string" },
+          "method": { "type": "string", "enum": ["e2e", "manual", "not_run"] },
+          "how": { "type": "string", "description": "the spec, or the steps you performed and the tool you used" },
+          "result": { "type": "string", "enum": ["proven", "failed", "not_covered"] },
+          "evidence": { "type": "array", "items": { "type": "string" }, "description": "paths of screenshots, logs, outputs under the evidence directory" }
+        }
+      }
+    },
+    "e2e_proposal": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "spec", "steps"],
+        "properties": {
+          "criterion": { "type": "string" },
+          "spec": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "needs": { "type": "string" }
+        }
+      }
+    },
+    "not_covered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["what", "why"],
+        "properties": { "what": { "type": "string" }, "why": { "type": "string" } }
+      }
+    },
+    "bugs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "steps", "expected", "actual"],
+        "properties": {
+          "title": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}
