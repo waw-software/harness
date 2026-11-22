@@ -23,11 +23,15 @@
 #       origin's default branch is re-resolved from the remote every time. No branch
 #       is created; the commander names it later. A taken name gets -2, -3. Only from
 #       the main checkout, never a linked worktree.
-#   task.sh deps [<dir>] [--force]
+#   task.sh deps [<dir>] [--force] [--base <commit>]
 #       Install the dependencies of the checkout at <dir> (default: here) exactly as its
 #       lockfile pins them (pnpm install --frozen-lockfile, npm ci, yarn --frozen-lockfile);
 #       never changes package.json or the lockfile. Skipped when node_modules is newer than
 #       the lockfile, unless --force. For the commander, in a new task worktree.
+#       Only on the untouched task base, also with --force (install scripts and package
+#       manager config run from the checkout): HEAD has no commits beyond origin/<default
+#       branch>, or equals <commit> with --base; the tree is clean (.ship/ and node_modules/
+#       ignored). Otherwise exit 3 and no package manager runs.
 #   task.sh dir <slug>
 #       Print <this worktree>/.ship/<slug>, created, with .ship/ kept out of git through
 #       info/exclude: the run files of a task (notes, the task text, review output). They
@@ -52,7 +56,7 @@ die() {
   printf 'task.sh: %s\n' "$2" >&2
   exit "$1"
 }
-usage() { die 2 "usage: task.sh open <slug> [--branch <branch>] [--prompt-file <file>] | prepare <slug> | dir <slug> | deps [<dir>] [--force] | clean | limit start <dir> [--minutes N] | limit check <dir>"; }
+usage() { die 2 "usage: task.sh open <slug> [--branch <branch>] [--prompt-file <file>] | prepare <slug> | dir <slug> | deps [<dir>] [--force] [--base <commit>] | clean | limit start <dir> [--minutes N] | limit check <dir>"; }
 
 # check_slug <slug>: a-z, 0-9 and -, at most 40 characters.
 check_slug() {
@@ -297,11 +301,21 @@ remove_done() {
 # yarn install --frozen-lockfile. Never changes package.json or the lockfile (a lockfile that
 # is out of date fails the install). Skipped when node_modules is newer than the lockfile,
 # unless --force. Output goes to <root>/.ship/deps.log; the last lines are printed.
+# Install scripts and package-manager config run from the checkout, so the install runs only
+# on the untouched task base, also with --force: without --base, HEAD must have no commits
+# beyond origin/<default branch>; with --base <commit>, HEAD must equal that commit. The tree
+# must be clean (paths under .ship/ and node_modules/ are ignored). Otherwise exit 3, no
+# package manager is called.
 do_deps() {
-  local dir="" force=0 root lock cmd log
+  local dir="" force=0 base_arg="" root lock cmd log base line first status
   while [ $# -gt 0 ]; do
     case $1 in
       --force) force=1 ;;
+      --base)
+        [ $# -ge 2 ] || die 2 "--base needs a commit"
+        base_arg=$2
+        shift
+        ;;
       -*) usage ;;
       *) [ -z "$dir" ] || usage; dir=$1 ;;
     esac
@@ -319,6 +333,28 @@ do_deps() {
     echo "deps: up to date ($root/node_modules is newer than $lock)"
     return 0
   fi
+  if [ -n "$base_arg" ]; then
+    base=$(git -c core.fsmonitor=false -C "$root" rev-parse --verify "$base_arg^{commit}" 2>/dev/null) ||
+      die 3 "deps: unknown base $base_arg"
+    [ "$(git -c core.fsmonitor=false -C "$root" rev-parse HEAD 2>/dev/null)" = "$base" ] ||
+      die 3 "deps: HEAD has commits beyond $base_arg: install only on the untouched base (see --base)"
+  else
+    base=origin/$(default_branch "$root")
+    git -c core.fsmonitor=false -C "$root" rev-parse -q --verify "refs/remotes/$base^{commit}" >/dev/null 2>&1 ||
+      die 3 "deps: no base to compare with; pass --base <commit>"
+    git -c core.fsmonitor=false -C "$root" merge-base --is-ancestor HEAD "refs/remotes/$base" 2>/dev/null ||
+      die 3 "deps: HEAD has commits beyond $base: install only on the untouched base (see --base)"
+  fi
+  first=""
+  status=$(git -c core.fsmonitor=false -C "$root" status --porcelain --untracked-files=all 2>/dev/null) ||
+    die 3 "deps: cannot read the worktree status"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case ${line:3} in .ship/* | node_modules/*) continue ;; esac
+    first=${line:3}
+    break
+  done <<<"$status"
+  [ -z "$first" ] || die 3 "deps: the worktree has changes ($first): install only on the untouched base"
   mkdir -p "$root/.ship"
   (cd "$root" && keep_out_of_git)
   log=$root/.ship/deps.log
