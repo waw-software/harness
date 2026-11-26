@@ -2,7 +2,21 @@
   "type": "object",
   "required": ["status", "checks", "criteria", "not_covered", "bugs"],
   "properties": {
-    "status": { "type": "string", "enum": ["pass", "fail", "blocked"] },
+    "status": { "type": "string", "enum": ["pass", "pass-with-exclusions", "fail", "blocked"] },
+    "exclusions": {
+      "type": "array",
+      "description": "for pass-with-exclusions: the checks that fail for a reason outside the change",
+      "items": {
+        "type": "object",
+        "required": ["check", "command", "reason"],
+        "properties": {
+          "check": { "type": "string", "description": "the name used in checks" },
+          "command": { "type": "string" },
+          "reason": { "type": "string", "description": "the exact error line and why it is the environment, not the change" },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
     "checks": {
       "type": "array",
       "description": "the project's checks: full check, unit tests, lint, type check, e2e suites",

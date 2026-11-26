@@ -145,6 +145,8 @@ slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer; `task.sh` 0, 2, 3, 5 limit
   in `agent.sh`; a Codex worker: a Codex permission profile, `codex_run_config`): it writes only in its worktree, the run directory, the temp dir and the tool
   caches; it reads no keys or tokens (`~/.ssh`, the keychain, `~/.npmrc`, the route configs);
   it reaches no network host but localhost (an `--allow-install` worker: its registries).
+  Workers' git reads `lib/worker.gitconfig` (no signing), and watchman runs no daemon in
+  workers (private `XDG_STATE_HOME`, `WATCHMAN_NO_SPAWN`).
   A gateway's key is in the keychain (the item `/configure` named for the route), read by
   the route's `apiKeyHelper`, never in a worker's environment. A new key: the developer
   copies it and runs `! security add-generic-password -U -s <item> -a waw -w "$(pbpaste)"`,
@@ -271,6 +273,10 @@ A report is a claim. Before you accept it:
   first found a blocker. What remains goes into the report.
 - **Tester**: `pass` only with evidence for every criterion; open the key screenshots. A
   bug goes to a developer as a brief with the tester's steps, expected and actual.
+  `pass-with-exclusions`: accept it only after you check each exclusion against its error
+  line (the environment, not the change; otherwise it is a fail), and list each under
+  "Not covered" in the report. `blocked` is a stop: fix the cause (a sandbox exception, the
+  brief) and run the tester again; never deliver on it.
 
 ## Shared worktree, parallel developers
 

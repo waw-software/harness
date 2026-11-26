@@ -176,7 +176,9 @@ Start the tester and the review at the same time; they only read the code.
    or by the tester on the running product (size S: the tester's command,
    its output in `<dir>/evidence/`), with evidence you opened. Never count a
    criterion as proven by code reading or unit tests alone; what could not be run goes
-   under "Not covered".
+   under "Not covered". A tester's `pass-with-exclusions` proves only what it proved; each
+   exclusion goes under "Not covered". `blocked` is not a result: fix the cause and run the
+   tester again; still blocked after that is a stop ("Stops").
 5. **Documents**: statements in the project's documents that this change made false are
    fixed by a developer brief, once, now. A decision that changes what the product does or
    how it is built goes where the project keeps decisions, as accepted: the developer's
@@ -214,7 +216,8 @@ When all jobs are done, read two things:
 The report, in the pull request and in the chat:
 
 1. **Try it**: how to see it work in a minute.
-2. **Proof**: per acceptance criterion, how it was proven (the e2e specs run, or what the
+2. **Proof**: first one line, `tests: pass | pass-with-exclusions (<check>: <reason>; ...) | fail | blocked`.
+   Then per acceptance criterion, how it was proven (the e2e specs run, or what the
    tester ran and with which tool) and what it showed, with the key screenshots.
 3. **E2E proposal**: from the tester, when there is one: the specs to add or extend and the
    criteria they would cover.
