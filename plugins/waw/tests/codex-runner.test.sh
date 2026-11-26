@@ -46,7 +46,8 @@ assert_contains "$args" "\"$OUT\" = \"write\"" "run dir writable"
 assert_contains "$args" "\"AGENT_NAME\" = \"dev-a\"" "the shell gets AGENT_NAME for ask.sh"
 assert_contains "$args" "You run as a Codex session" "the Codex note is in the role prompt"
 assert_contains "$args" "\"GIT_CONFIG_GLOBAL\" = \"$SETUP_UNDER_TEST/lib/worker.gitconfig\"" "the shell gets the worker's git config"
-assert_contains "$args" "\"XDG_STATE_HOME\" = \"$OUT/dev-a.state\"" "the shell gets the run's own state dir"
+assert_contains "$args" "\"XDG_STATE_HOME\" = \"$HOME/.local/state/waw/s." "the shell gets the run's own short state dir"
+case $args in *"\"$HOME/.local/state/waw/s."??????'/watchman" = "write"'*) ;; *) fail "the run's watchman dir is not writable" ;; esac
 assert_contains "$args" '"WATCHMAN_NO_SPAWN" = "1"' "watchman spawns no daemon"
 case $args in *"$TEST_ROOT/elsewhere"* | *'"WATCHMAN_NO_SPAWN" = "0"'*) fail "a commander's value is in the codex args" ;; esac
 case $args in *.local/state/watchman*) fail "the developer's watchman state is in the codex args" ;; esac

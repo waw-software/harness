@@ -108,8 +108,10 @@
 # hooks match command text and stop accidents; the sandbox is the isolation, which is also why
 # bypassPermissions is safe where a project allows it. A tester does not start while a
 # developer works in the same --cwd: it tests a settled tree. Every worker's env sets
-# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), a private XDG_STATE_HOME in the run dir
-# (<name>.state) and WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
+# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), a private XDG_STATE_HOME,
+# ~/.local/state/waw/s.XXXXXX per run (short: watchman's socket path must stay under 104
+# bytes; the root is outside every write list, only the run's watchman/ in it is writable),
+# and WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
 # Exit: 0 report written, 2 usage, 3 config, 4 the worker failed or gave no valid report,
 # 5 timed out, 6 stopped, 7 slot-wait timeout. Portable to macOS /bin/bash 3.2.
 # A tester's pass-with-exclusions report whose exclusions do not name every check that did not
@@ -365,7 +367,8 @@ registry_hosts() {
   grep -hoE 'https?://[^/:" ]+' "$1/.npmrc" "$HOME/.npmrc" 2>/dev/null | sed 's#^.*//##' | sort -u
 }
 
-# worker_settings <role> <dir> <run dir> <allow_install 0|1>: the --settings JSON of a worker.
+# worker_settings <role> <dir> <run dir> <allow_install 0|1> [<state dir>]: the --settings JSON
+# of a worker (sandbox-check gives no state dir).
 #   hooks        worker-guard.sh and guard-push.sh before Bash, Edit and Write calls;
 #   permissions  Read denied on SECRET_PATHS;
 #   sandbox      Claude Code's OS sandbox (Seatbelt on macOS) around every Bash command and
@@ -374,13 +377,15 @@ registry_hosts() {
 #                its package registries, and the pnpm 12 store operation lock, which pnpm
 #                keeps in /tmp/pnpm-store-operation-locks-<uid>), localhost allowed (tests start servers); no
 #                unsandboxed retry, and no worker without the sandbox. Watchman gets a private
-#                XDG_STATE_HOME in the run dir (<name>.state, in the worker's env) and spawns no
-#                daemon (its macOS daemon starts through launchd, outside the sandbox);
-#                ~/.local/state/watchman is not writable (its state file holds triggers).
+#                XDG_STATE_HOME, ~/.local/state/waw/s.XXXXXX per run (short: watchman's socket
+#                path must stay under 104 bytes), and spawns no daemon (its macOS daemon starts
+#                through launchd, outside the sandbox). That root is outside every write list;
+#                only the run's own <state dir>/watchman is writable. ~/.local/state/watchman is
+#                not writable (its state file holds triggers).
 # AGENT_SANDBOX=off leaves the sandbox out, for debugging only: sandbox-check (and so
 # /auto-pilot) refuses then.
 worker_settings() {
-  local role=$1 wdir=$2 wout=$3 install=$4 p hosts=()
+  local role=$1 wdir=$2 wout=$3 install=$4 state=${5:-} p hosts=()
   local secrets=()
   for p in "${SECRET_PATHS[@]}"; do
     if [ "$install" = 1 ] && [ "$p" = "~/.npmrc" ]; then continue; fi
@@ -393,7 +398,7 @@ worker_settings() {
   fi
   jq -nc --arg g "$guard" --arg pg "$push_guard" --arg d "$wdir" --arg o "$wout" \
     --arg role "$role" --arg install "$install" --arg sb "${AGENT_SANDBOX:-on}" \
-    --arg hosts "${hosts[*]:-}" --arg uid "$(id -u)" '
+    --arg hosts "${hosts[*]:-}" --arg uid "$(id -u)" --arg state "$state" '
     ($ARGS.positional) as $sec
     | {hooks: {PreToolUse: [
         {matcher: "Bash", hooks: [{type: "command", command: $g}, {type: "command", command: $pg}]},
@@ -404,6 +409,7 @@ worker_settings() {
         enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
         filesystem: {
           allowWrite: ([$d, $o, "~/Library/Caches", "~/.cache"]
+            + (if $state == "" then [] else ["\($state)/watchman"] end)
             + (if $install == "1" then ["~/Library/pnpm", "~/.pnpm-store", "~/.npm",
                  "/private/tmp/pnpm-store-operation-locks-\($uid)"] else [] end)),
           denyRead: $sec},
@@ -482,9 +488,11 @@ codex_run_config() {
     hosts=(registry.npmjs.org)
     while IFS= read -r p; do [ -z "$p" ] || hosts+=("$p"); done < <(registry_hosts "$wdir")
   fi
-  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --arg uid "$(id -u)" --argjson extra "$extra" '
+  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --arg uid "$(id -u)" --argjson extra "$extra" \
+    --arg state "$WORKER_STATE_HOME" '
     ($ARGS.positional | map({(.): "deny"}) | add // {}) as $deny
-    | {":root": "read", ":tmpdir": "write", ($o): "write", "~/Library/Caches": "write", "~/.cache": "write"}
+    | {":root": "read", ":tmpdir": "write", ($o): "write", "~/Library/Caches": "write", "~/.cache": "write",
+       "\($state)/watchman": "write"}
       + (if $install == "1" then {"~/Library/pnpm": "write", "~/.pnpm-store": "write", "~/.npm": "write",
            "/private/tmp/pnpm-store-operation-locks-\($uid)": "write"} else {} end)
       + $deny + ($extra | del(.[":workspace_roots"]))
@@ -1007,9 +1015,18 @@ if [ "$runner" = codex ]; then session=${resume:-}; else session=${resume:-$(uui
 
 log=$out/$name.jsonl err=$out/$name.err result=$out/$name.result.json
 events=$out/events.log runfile=$out/$name.pid
-# the run's own XDG_STATE_HOME: no worker can break another's
-WORKER_STATE_HOME=$out/$name.state
-mkdir -p "$WORKER_STATE_HOME" || die 3 "could not create $WORKER_STATE_HOME"
+# the run's own XDG_STATE_HOME, in a root no sandbox can write: no worker can change another's
+state_root=$HOME/.local/state/waw
+mkdir -p "$state_root" || die 3 "could not create $state_root"
+# what killed runs left behind
+find "$state_root" -maxdepth 1 -name 's.*' -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+WORKER_STATE_HOME=$(mktemp -d "$state_root/s.XXXXXX") || die 3 "could not create a state dir in $state_root"
+# until the run's own EXIT trap (cleanup) takes over
+trap 'rm -rf "$WORKER_STATE_HOME"' EXIT
+mkdir "$WORKER_STATE_HOME/watchman" || die 3 "could not create $WORKER_STATE_HOME/watchman"
+# Claude Code's version locks stay where the developer's updater looks, or it may remove a version in use
+claude_state=${XDG_STATE_HOME:-$HOME/.local/state}/claude
+mkdir -p "$claude_state" && ln -s "$claude_state" "$WORKER_STATE_HOME/claude" || die 3 "could not link $claude_state into $WORKER_STATE_HOME"
 cp "$brief" "$out/$name.brief.md"
 : >"$log"
 : >"$err"
@@ -1022,7 +1039,7 @@ common=$(cat "$HERE/roles/common.md")
   [ "$runner" != codex ] || cat "$HERE/roles/codex.md"; } >"$prompt"
 
 [ -x "$guard" ] && [ -x "$push_guard" ] || die 3 "missing $guard or $push_guard"
-hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install") || die 3 "could not build the worker settings"
+hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install" "$WORKER_STATE_HOME") || die 3 "could not build the worker settings"
 
 # The OS sandbox confines Bash and its children; the file tools are held by worker-guard.sh
 # (physical path check) and the Read deny rules. bypassPermissions is used because those layers,
@@ -1073,6 +1090,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$$" "$queued_started" "$name" "$role"
 lease='' lease_held=0 acq_pid='' seg_pid=''
 cleanup() { # idempotent: runs from the traps and at exit; releases the lease if we still hold it
   rm -f "$entry" "$runfile" "$out/$name.queued"
+  rm -rf "$WORKER_STATE_HOME" 2>/dev/null || true # a leftover must not keep the slot
   if [ "$lease_held" = 1 ]; then
     python3 -I "$HERE/slots.py" release --state-dir "$STATE_DIR" --lease "$lease" \
       --owner-pid "$$" >/dev/null 2>&1 || true

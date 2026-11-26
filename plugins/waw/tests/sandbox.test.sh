@@ -206,18 +206,38 @@ case_proxy_credentials() {
 }
 
 case_worker_git_and_state_env() {
-  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo state
+  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo state rel home
+  # the state dir is gone after the run: while it runs, record the claude link and write
+  # through it, as Claude Code does with its version locks
+  cat >"$TEST_ROOT/bin/claude" <<EOF
+#!/bin/sh
+readlink "\$XDG_STATE_HOME/claude" >"$TEST_ROOT/claude-state-link.log"
+[ ! -d "\$XDG_STATE_HOME/watchman" ] || : >"$TEST_ROOT/claude-state-watchman.log"
+: >"\$XDG_STATE_HOME/claude/test.lock"
+exec bash "$TESTS_DIR/fixtures/fake-claude.sh" "\$@"
+EOF
   XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig WATCHMAN_NO_SPAWN=0 \
     AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME WATCHMAN_NO_SPAWN" \
     assert_exit 0 run_worker sb-gitenv developer "$ROOT/gitenv"
+  cp "$TESTS_DIR/fixtures/fake-claude.sh" "$TEST_ROOT/bin/claude"
+  assert_eq "$(cat "$TEST_ROOT/claude-state-link.log")" "$TEST_ROOT/elsewhere/claude" "claude in the state dir links to the commander's Claude state"
+  [ -f "$TEST_ROOT/elsewhere/claude/test.lock" ] || fail "removing the state dir removed what is behind the claude link"
   [ -s "$f" ] || fail "the fake claude recorded no environment"
-  state=$(cd "$ROOT/gitenv/.ship/t/agents" && pwd -P)/sb-gitenv.state
+  state=$(sed -n 's/^XDG_STATE_HOME=//p' "$f")
   grep -qxF "GIT_CONFIG_GLOBAL=$cfg" "$f" || fail "the worker's global git config is not the plugin's"
-  grep -qxF "XDG_STATE_HOME=$state" "$f" || fail "the worker has no XDG_STATE_HOME of its own in the run dir"
+  [[ $state =~ ^"$HOME"/\.local/state/waw/s\.[A-Za-z0-9]{6}$ ]] || fail "the worker has no short XDG_STATE_HOME of its own: [$state]"
+  [ -f "$TEST_ROOT/claude-state-watchman.log" ] || fail "the state dir had no watchman/ during the run"
+  assert_eq "$(jqs "$(settings_of sb-gitenv)" "[.sandbox.filesystem.allowWrite[]
+      | select(startswith(\"$HOME/.local\") or startswith(\"~/.local\"))] | join(\" \")")" \
+    "$state/watchman" "under ~/.local only the run's own watchman dir is writable"
+  # watchman's socket, <state>/watchman/<user>-state/sock (22 bytes more than the user, with the
+  # NUL), under a real home: the test's HOME sits deep in TMPDIR
+  rel=${state#"$HOME"} home=/Users/$USER
+  [ $((${#home} + ${#rel} + ${#USER} + 22)) -lt 104 ] || fail "watchman's socket path would be too long: $home$rel"
   grep -qxF "WATCHMAN_NO_SPAWN=1" "$f" || fail "WATCHMAN_NO_SPAWN missing"
   ! grep -qF "$TEST_ROOT/elsewhere" "$f" || fail "a commander's path reached the worker"
   ! grep -qxF "WATCHMAN_NO_SPAWN=0" "$f" || fail "the commander's WATCHMAN_NO_SPAWN reached the worker"
-  [ -d "$state" ] || fail "the worker's state dir was not created"
+  [ ! -e "$state" ] || fail "the worker's state dir was left behind"
   [ ! -e "$HOME/.cache/waw/xdg-state" ] || fail "a state dir shared by all workers was created"
   assert_eq "$(git config --file "$cfg" --list | cut -d= -f1 | sort | tr '\n' ' ')" \
     "commit.gpgsign tag.gpgsign user.email user.name " "keys of the worker's git config"
@@ -228,8 +248,21 @@ case_worker_git_and_state_env() {
   GIT_CONFIG_GLOBAL=$cfg assert_exit 0 git -C "$repo" commit -q --allow-empty -m x
 }
 
+case_state_sweep() {
+  local root=$HOME/.local/state/waw kept=$ROOT/swept-target
+  mkdir -p "$root/s.old000" "$root/s.new000" "$kept"
+  : >"$kept/file"
+  ln -s "$kept" "$root/s.old000/claude"
+  touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$root/s.old000"
+  assert_exit 0 run_worker sb-sweep developer "$ROOT/sweep"
+  [ ! -e "$root/s.old000" ] || fail "a state dir two days old was not swept"
+  [ -d "$root/s.new000" ] || fail "a fresh state dir was swept"
+  [ -f "$kept/file" ] || fail "the sweep followed the claude link"
+}
+
 case_developer_sandbox
 case_worker_git_and_state_env
+case_state_sweep
 case_budget_in_real_dollars
 case_tester_and_install
 case_sandbox_off_and_check
@@ -240,4 +273,4 @@ case_new_default_denies
 case_read_deny_file
 case_parent_env_allowlist
 case_proxy_credentials
-printf 'sandbox.test.sh: all twelve cases passed\n'
+printf 'sandbox.test.sh: all thirteen cases passed\n'
