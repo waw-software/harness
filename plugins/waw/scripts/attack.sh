@@ -30,15 +30,14 @@
 # empty, timed out, without a first output in time or an invalid answer -> next.
 # Environment, whole numbers of seconds:
 #   ATTACK_TIMEOUT       a call's deadline, at least 1; unset: 600 + 6 per 1000 bytes of the
-#                        input, at most 2400.
+#                        provider's input (the list of omitted files included), at most 2400.
 #   ATTACK_FIRST_OUTPUT  how long a provider that reports progress (codex, claude and every
 #                        route) may take to its first model output; default 180, 0 = off.
 #                        opencode and gateway have only the deadline.
 #   ATTACK_HEARTBEAT     the interval of the "waiting:" lines; default 30, at least 1.
-#   ATTACK_TEST_RUNNER   tests only: "with_deadline" uses this script's own deadline runner
-#                        even where timeout or gtimeout exist.
-# A provider stopped for lack of output (or by the own deadline runner) gets TERM with its
-# children, and what is left after 3 seconds gets KILL.
+# Providers run under this script's own deadline, not timeout(1). A provider stopped at it or
+# for lack of output gets TERM with its process group and its children, and what is left after
+# 3 seconds gets KILL.
 # Only regular files inside the repository, not ignored by git and without a secret-like name
 # (.env* except .env.example, keys, credentials) are added from a diff or a question file, the
 # rule files (CLAUDE.md, AGENTS.md, SECURITY.md) included; the files passed by option are sent as
@@ -112,8 +111,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 max_bytes=$(whole --max-bytes "$max_bytes" 0)
-# An empty TIMEOUT is scaled to the input once that is built.
-TIMEOUT=$(int_env ATTACK_TIMEOUT "" 1)
+# When empty, each provider's TIMEOUT is scaled to its input.
+SET_TIMEOUT=$(int_env ATTACK_TIMEOUT "" 1)
 FIRST_OUTPUT=$(int_env ATTACK_FIRST_OUTPUT 180 0)
 HEARTBEAT=$(int_env ATTACK_HEARTBEAT 30 1)
 if [ -n "$repo_dir" ]; then
@@ -303,7 +302,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/waw.attack.XXXXXX")
 rpid=""
 # shellcheck disable=SC2329 # called by the EXIT trap
 cleanup() {
-  [ -z "$rpid" ] || stop_tree "$rpid" >/dev/null 2>&1 || true
+  [ -z "$rpid" ] || stop_provider >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -496,10 +495,6 @@ done
   fi
 } >"$tmp/input.base"
 awk '!seen[$0]++' "$tmp/omitted" >"$tmp/omitted.list"
-if [ -z "$TIMEOUT" ]; then
-  TIMEOUT=$((600 + 6 * $(wc -c <"$tmp/input.base" | tr -d ' ') / 1000))
-  [ "$TIMEOUT" -le 2400 ] || TIMEOUT=2400
-fi
 
 # codex_diff_cmd: the git command for the whole change, with the exclusions of the diff above.
 codex_diff_cmd() {
@@ -617,28 +612,56 @@ kill_tree() {
   echo "$1"
 }
 
-# stop_tree <pid>: end the process and its descendants; what ignores TERM gets KILL after a
-# grace of 3 seconds.
+# still_alive <target...>: the targets (pids, or -<pgid> for a group) that can be signalled.
+# shellcheck disable=SC2329 # called by stop_tree
+still_alive() {
+  local q
+  for q in "$@"; do if kill -0 -- "$q" 2>/dev/null; then printf '%s ' "$q"; fi; done
+}
+
+# stop_tree <pid>: end the process, its descendants and, when it leads a process group, that
+# group (it keeps those whose parent has already exited); what ignores TERM gets KILL after a
+# grace of 3 seconds. Returns once they are gone, waiting at most 2 seconds after the KILL.
 stop_tree() {
   local pids q g alive=""
+  # The descendants first: once a parent has exited, its children are not found from it.
   pids=$(kill_tree "$1")
+  if kill -TERM -- "-$1" 2>/dev/null; then
+    kill -CONT -- "-$1" 2>/dev/null || true
+    pids="$pids -$1"
+  fi
   for g in 1 2 3 4; do
-    alive=""
-    for q in $pids; do if kill -0 "$q" 2>/dev/null; then alive="$alive $q"; fi; done
+    # shellcheck disable=SC2086 # a list of targets
+    alive=$(still_alive $pids)
     [ -n "$alive" ] || return 0
     [ "$g" = 4 ] || sleep 1
   done
-  for q in $alive; do kill -KILL "$q" 2>/dev/null || true; done
+  for q in $alive; do kill -KILL -- "$q" 2>/dev/null || true; done
+  for g in {1..20}; do
+    # shellcheck disable=SC2086 # a list of targets
+    [ -n "$(still_alive $alive)" ] || return 0
+    sleep 0.1
+  done
 }
 
-# with_deadline <cmd...>: run the command; after TIMEOUT seconds end it with its children
-# and return 124, as timeout(1) does. For machines without timeout and gtimeout.
-# shellcheck disable=SC2329 # called through the runner array of run_provider
+# stop_provider: stop the running attempt: the adapter's tree, then its deadline runner.
+stop_provider() {
+  [ ! -s "$tmp/adapter.pid" ] || stop_tree "$(cat "$tmp/adapter.pid")"
+  stop_tree "$rpid"
+}
+
+# with_deadline <cmd...>: run the command in a process group of its own, its pid in
+# $tmp/adapter.pid; after TIMEOUT seconds end it with its children and return 124. Not
+# timeout(1): it returns once the command has exited, and a descendant that ignores TERM
+# would stay.
 with_deadline() {
   local pid wd rc=0
   trap - EXIT INT TERM # it runs in the background: the script's cleanup is not its own
+  set -m
   "$@" &
   pid=$!
+  set +m
+  echo "$pid" >"$tmp/adapter.pid"
   (
     n=0
     while kill -0 "$pid" 2>/dev/null; do
@@ -678,15 +701,12 @@ first_output_wait() {
 # provider's status when it fails.
 run_provider() {
   local rc=0 n=0 first m
-  local -a runner=(with_deadline)
-  if [ "${ATTACK_TEST_RUNNER:-}" = with_deadline ]; then
-    :
-  elif command -v timeout >/dev/null 2>&1; then
-    runner=(timeout -k 5 "$TIMEOUT")
-  elif command -v gtimeout >/dev/null 2>&1; then
-    runner=(gtimeout -k 5 "$TIMEOUT")
-  fi
   { cat "$tmp/input.base"; emit_omitted "$1"; } >"$tmp/input"
+  TIMEOUT=$SET_TIMEOUT
+  if [ -z "$TIMEOUT" ]; then
+    TIMEOUT=$((600 + 6 * $(wc -c <"$tmp/input" | tr -d ' ') / 1000))
+    [ "$TIMEOUT" -le 2400 ] || TIMEOUT=2400
+  fi
   local key_env=$CFG_GATEWAY_KEY_ENV adapter=$PROVIDER_DIR/$1.sh
   [ -z "$CFG_GATEWAY_KEYCHAIN" ] || key_env=AGENTIC_GATEWAY_KEY
   export ATTACK_MODEL ATTACK_EFFORT=$CFG_EFFORT ATTACK_TIMEOUT=$TIMEOUT GATEWAY_URL=$CFG_GATEWAY_URL \
@@ -698,20 +718,22 @@ run_provider() {
   ATTACK_MODEL=$(model_of "$1")
   : >"$tmp/progress"
   export ATTACK_PROGRESS=$tmp/progress
-  rm -f "$tmp/timed-out"
+  rm -f "$tmp/timed-out" "$tmp/adapter.pid"
   first=$(first_output_wait "$1")
   m=$ATTACK_MODEL
   printf 'trying: %s%s (timeout %ss' "$1" "${m:+:$m}" "$TIMEOUT"
   [ "$first" = 0 ] || printf ', first output within %ss' "$first"
   printf ')\n'
-  "${runner[@]}" "$adapter" "$tmp/input" >"$tmp/answer" 2>"$tmp/err" &
+  with_deadline "$adapter" "$tmp/input" >"$tmp/answer" 2>"$tmp/err" &
   rpid=$!
   while kill -0 "$rpid" 2>/dev/null; do
     sleep 1
     n=$((n + 1))
     kill -0 "$rpid" 2>/dev/null || break
-    if [ "$first" -gt 0 ] && [ "$n" -ge "$first" ] && [ ! -s "$tmp/progress" ]; then
-      stop_tree "$rpid"
+    # Not once the deadline stops it: ending the watchdog then would lose the KILL.
+    if [ "$first" -gt 0 ] && [ "$n" -ge "$first" ] && [ ! -s "$tmp/progress" ] &&
+      [ ! -f "$tmp/timed-out" ]; then
+      stop_provider
       wait "$rpid" 2>/dev/null || true
       rpid=""
       return 125
@@ -756,11 +778,14 @@ valid_answer() {
 }
 
 # keep_invalid <provider>: keep the answer and the stderr of an invalid answer under a name
-# of their own, so runs that share the directory lose nothing; prints the answer's path.
+# of their own, so runs that share the directory lose nothing, both private (mode 600) and
+# neither over an existing file; prints the answer's path.
 keep_invalid() {
   local f
+  # mktemp makes the answer's file 600 and cp keeps that; noclobber creates the .err only
+  # when there is none.
   mkdir -p "$keep_dir" && f=$(mktemp "$keep_dir/attack-$role-$1.XXXXXX") &&
-    cp "$tmp/answer" "$f" && cp "$tmp/err" "$f.err" && printf '%s' "$f"
+    cp "$tmp/answer" "$f" && (umask 077 && set -C && cat "$tmp/err" >"$f.err") && printf '%s' "$f"
 }
 
 # The gateway's key from the macOS keychain, read once and only when the gateway is in the order.
@@ -796,7 +821,7 @@ for p in $ORDER; do
           why="invalid answer; raw: not kept, cannot write in $keep_dir"
         fi
         ;;
-      124 | 137) why="timed out after ${TIMEOUT}s" ;; # 137: timeout -k had to KILL it
+      124) why="timed out after ${TIMEOUT}s" ;;
       125) why="no first output within $(first_output_wait "$p")s" ;;
       *)
         # The provider's last line says why (a usage limit, a bad model name).

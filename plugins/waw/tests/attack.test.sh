@@ -160,9 +160,27 @@ case_progress_keeps_provider() {
 case_stubborn_child_killed() {
   reset_case
   set_config "opencode fast"
-  export ATTACK_TEST_RUNNER=with_deadline FAKE_OPENCODE_MODE=stubborn ATTACK_TIMEOUT=2
-  local start=$SECONDS child
+  export FAKE_OPENCODE_MODE=stubborn ATTACK_TIMEOUT=2
+  local start=$SECONDS child t
+  # A timeout(1) that ends only the command itself, as GNU timeout does once that has exited:
+  # attack.sh must not use it, or the child stays.
+  for t in timeout gtimeout; do
+    cat >"$TEST_ROOT/bin/$t" <<'EOF'
+#!/bin/sh
+[ "$1" != -k ] || shift 2
+limit=$1
+shift
+"$@" &
+pid=$!
+sleep "$limit"
+kill -0 "$pid" 2>/dev/null || { wait "$pid"; exit; }
+kill -KILL "$pid"
+exit 124
+EOF
+    chmod 755 "$TEST_ROOT/bin/$t"
+  done
   attack --role review
+  rm -f "$TEST_ROOT/bin/timeout" "$TEST_ROOT/bin/gtimeout"
   exit_is 0 stubborn
   in_order 'skipped: opencode (timed out after 2s)' 'provider: fast'
   [ $((SECONDS - start)) -lt 15 ] || fail "stopping took $((SECONDS - start))s"
@@ -177,7 +195,9 @@ case_invalid_concurrent() {
   reset_case
   set_config opencode
   export FAKE_OPENCODE_MODE=invalid
-  local i p1 p2 rc1=0 rc2=0 raw1 raw2
+  local i p1 p2 rc1=0 rc2=0 raw1 raw2 f old_umask
+  old_umask=$(umask)
+  umask 022
   for i in 1 2; do
     bash "$ATTACK" --repo "$REPO" --role review --keep-dir "$TEST_ROOT/keep" \
       >"$TEST_ROOT/out$i" 2>"$TEST_ROOT/err$i" &
@@ -196,6 +216,10 @@ case_invalid_concurrent() {
   grep -qE '^all fine pid [0-9]+$' "$raw2" || fail "raw2: $(cat "$raw2")"
   [ "$(cat "$raw1")" != "$(cat "$raw2")" ] || fail "both files hold the same answer"
   [ -f "$raw1.err" ] && [ -f "$raw2.err" ] || fail "stderr was not kept"
+  umask "$old_umask"
+  for f in "$raw1" "$raw1.err" "$raw2" "$raw2.err"; do
+    assert_eq "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")" 600 "mode of $f"
+  done
   assert_eq "$(grep -c '^skipped: ' "$TEST_ROOT/out1")" 1 "skipped lines"
 }
 
@@ -267,6 +291,26 @@ case_timeout_scaled() {
   attack --role review
   exit_is 0 "set timeout"
   assert_contains "$out" '(timeout 30s)' "set timeout"
+  # With omitted files the deadline follows the provider's whole input, their list included.
+  reset_case 2000
+  cp "$TEST_ROOT/bin/opencode" "$TEST_ROOT/opencode.saved"
+  cat >"$TEST_ROOT/bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+prev=''
+for a in "$@"; do
+  [ "$prev" != --file ] || cp "$a" "$TEST_ROOT/sent-input"
+  prev=$a
+done
+exec bash "$TEST_ROOT/opencode.saved" "$@"
+EOF
+  attack --role review --max-bytes 300
+  cp "$TEST_ROOT/opencode.saved" "$TEST_ROOT/bin/opencode"
+  exit_is 5 "scaled with omitted files"
+  grep -q '^===== NOT IN THIS INPUT' "$TEST_ROOT/sent-input" || fail "no omitted list in the input"
+  local bytes
+  bytes=$(wc -c <"$TEST_ROOT/sent-input" | tr -d ' ')
+  t=$(sed -n 's/^trying: opencode:go\/kimi (timeout \([0-9]*\)s)$/\1/p' "$TEST_ROOT/out")
+  assert_eq "$t" "$((600 + 6 * bytes / 1000))" "deadline of a $bytes byte input"
 }
 
 cases="duplicate_providers bad_timing valid_no_note failover_on_no_progress progress_keeps_provider
