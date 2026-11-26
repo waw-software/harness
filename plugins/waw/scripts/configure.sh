@@ -345,6 +345,9 @@ apply() {
   done
   n=$(jq '.review.providers // [] | length' "$choices")
   [ "$n" -gt 0 ] || die 2 "review.providers is empty: name at least one provider for code review and decisions"
+  local dup
+  dup=$(jq -r '[.review.providers[].provider] | group_by(.) | map(select(length > 1)[0]) | join(" ")' "$choices")
+  [ -z "$dup" ] || die 2 "review.providers: $dup is named more than once (a second entry would overwrite the first one's model)"
   for i in $(seq 0 $((n - 1))); do
     p=$(jq -r --argjson i "$i" '.review.providers[$i].provider // ""' "$choices")
     m=$(jq -r --argjson i "$i" '.review.providers[$i].model // ""' "$choices")
