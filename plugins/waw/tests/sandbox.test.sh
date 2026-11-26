@@ -38,6 +38,7 @@ case_developer_sandbox() {
   assert_eq "$(jqs "$s" '.sandbox.network.strictAllowlist')" true "strict network allowlist"
   assert_eq "$(jqs "$s" '.sandbox.network.allowedDomains | length')" 0 "no network host"
   assert_eq "$(jqs "$s" ".sandbox.network.allowUnixSockets | join(\" \")")" "/private/tmp/claude-$(id -u)/tsx-$(id -u)" "only the tsx IPC socket dir"
+  assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite | map(select(contains(".local/state/watchman"))) | length')" 0 "the watchman state of the developer is not writable"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite[0]')" "$cwd" "writes in the worktree"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.ssh") != null')" true "ssh keys unreadable"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.npmrc") != null')" true "npm tokens unreadable"
@@ -204,7 +205,28 @@ case_proxy_credentials() {
   grep -q '^HTTPS_PROXY=http://u:p@proxy:3128$' "$f" || fail "a proxy named in AGENT_WORKER_ENV was not passed"
 }
 
+case_worker_git_and_state_env() {
+  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo
+  XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig \
+    AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME" \
+    assert_exit 0 run_worker sb-gitenv developer "$ROOT/gitenv"
+  [ -s "$f" ] || fail "the fake claude recorded no environment"
+  grep -qxF "GIT_CONFIG_GLOBAL=$cfg" "$f" || fail "the worker's global git config is not the plugin's"
+  grep -qxF "XDG_STATE_HOME=$HOME/.cache/waw/xdg-state" "$f" || fail "the worker has no private XDG_STATE_HOME"
+  grep -qxF "WATCHMAN_NO_SPAWN=1" "$f" || fail "WATCHMAN_NO_SPAWN missing"
+  ! grep -qxF "XDG_STATE_HOME=$TEST_ROOT/elsewhere" "$f" || fail "the commander's XDG_STATE_HOME reached the worker"
+  [ -d "$HOME/.cache/waw/xdg-state" ] || fail "the worker's state dir was not created"
+  assert_eq "$(git config --file "$cfg" --list | cut -d= -f1 | sort | tr '\n' ' ')" \
+    "commit.gpgsign tag.gpgsign user.email user.name " "keys of the worker's git config"
+  printf '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n' >"$ROOT/signing.gitconfig"
+  git init -q "$repo" || fail "git init failed"
+  ! GIT_CONFIG_GLOBAL=$ROOT/signing.gitconfig git -C "$repo" commit -q --allow-empty -m x 2>/dev/null ||
+    fail "a commit that has to sign succeeded"
+  GIT_CONFIG_GLOBAL=$cfg assert_exit 0 git -C "$repo" commit -q --allow-empty -m x
+}
+
 case_developer_sandbox
+case_worker_git_and_state_env
 case_budget_in_real_dollars
 case_tester_and_install
 case_sandbox_off_and_check
@@ -215,4 +237,4 @@ case_new_default_denies
 case_read_deny_file
 case_parent_env_allowlist
 case_proxy_credentials
-printf 'sandbox.test.sh: all eleven cases passed\n'
+printf 'sandbox.test.sh: all twelve cases passed\n'

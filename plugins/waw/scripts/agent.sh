@@ -107,7 +107,9 @@
 # put every Bash command of the worker in Claude Code's OS sandbox (worker_settings): the
 # hooks match command text and stop accidents; the sandbox is the isolation, which is also why
 # bypassPermissions is safe where a project allows it. A tester does not start while a
-# developer works in the same --cwd: it tests a settled tree.
+# developer works in the same --cwd: it tests a settled tree. Every worker's env sets
+# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), XDG_STATE_HOME (~/.cache/waw/xdg-state) and
+# WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
 # Exit: 0 report written, 2 usage, 3 config, 4 the worker failed or gave no valid report,
 # 5 timed out, 6 stopped, 7 slot-wait timeout. Portable to macOS /bin/bash 3.2.
 set -euo pipefail
@@ -319,6 +321,10 @@ for _d in "${CLAUDE_CONFIG_DIR:-/nonexistent}"/ "$AS_HOME"/workers/*/ "${CFG_NEX
 done
 unset _d _f
 
+# A worker's git and watchman (their env: GIT_CONFIG_GLOBAL, XDG_STATE_HOME).
+WORKER_STATE_HOME="$HOME/.cache/waw/xdg-state"
+WORKER_GITCONFIG="$HERE/lib/worker.gitconfig"
+
 # read_deny_extra <worktree> <run dir>: the paths of $WAW_HOME/read-deny, one per line (an
 # absolute path or ~/..., spaces kept; blank lines and # lines skipped). A path that is the
 # worktree, the run directory or a parent of either is skipped with a warning: the worker
@@ -366,7 +372,10 @@ registry_hosts() {
 #                tool caches; reads none of SECRET_PATHS; no network host (an install worker:
 #                its package registries, and the pnpm 12 store operation lock, which pnpm
 #                keeps in /tmp/pnpm-store-operation-locks-<uid>), localhost allowed (tests start servers); no
-#                unsandboxed retry, and no worker without the sandbox.
+#                unsandboxed retry, and no worker without the sandbox. Watchman gets a private
+#                XDG_STATE_HOME (the worker's env) and spawns no daemon (its macOS daemon starts
+#                through launchd, outside the sandbox); ~/.local/state/watchman is not writable
+#                (its state file holds triggers).
 # AGENT_SANDBOX=off leaves the sandbox out, for debugging only: sandbox-check (and so
 # /auto-pilot) refuses then.
 worker_settings() {
@@ -482,8 +491,10 @@ codex_run_config() {
   printf 'permissions.worker.network=%s\n' "$(jq -nc --arg hosts "${hosts[*]:-}" '
     {enabled: true, allow_local_binding: true}
     + (($hosts | split(" ") | map(select(. != ""))) as $h | if ($h | length) > 0 then {domains: ($h | map({(.): "allow"}) | add)} else {} end)' | toml_table)"
-  printf 'shell_environment_policy=%s\n' "$(jq -nc --arg n "$AGENT_NAME_V" --arg r "$role" --arg s "$wdir" --arg o "$wout" --arg e "$wout/events.log" '
-    {inherit: "core", set: {AGENT_NAME: $n, AGENT_ROLE: $r, AGENT_SCOPE: $s, AGENT_RUN_DIR: $o, AGENT_EVENTS: $e}}' | toml_table)"
+  printf 'shell_environment_policy=%s\n' "$(jq -nc --arg n "$AGENT_NAME_V" --arg r "$role" --arg s "$wdir" --arg o "$wout" --arg e "$wout/events.log" \
+    --arg g "$WORKER_GITCONFIG" --arg x "$WORKER_STATE_HOME" '
+    {inherit: "core", set: {AGENT_NAME: $n, AGENT_ROLE: $r, AGENT_SCOPE: $s, AGENT_RUN_DIR: $o, AGENT_EVENTS: $e,
+      GIT_CONFIG_GLOBAL: $g, XDG_STATE_HOME: $x, WATCHMAN_NO_SPAWN: "1"}}' | toml_table)"
   # The developer's own skills (~/.agents/skills) stay out; the project's (.agents/skills) and the
   # route's ($CODEX_HOME/skills) are the worker's, as a Claude worker has its project's and its
   # route's. Codex has no switch for that one place, so each of its skills is turned off.
@@ -1008,6 +1019,7 @@ common=$(cat "$HERE/roles/common.md")
 
 [ -x "$guard" ] && [ -x "$push_guard" ] || die 3 "missing $guard or $push_guard"
 hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install") || die 3 "could not build the worker settings"
+mkdir -p "$WORKER_STATE_HOME" || die 3 "could not create $WORKER_STATE_HOME"
 
 # The OS sandbox confines Bash and its children; the file tools are held by worker-guard.sh
 # (physical path check) and the Read deny rules. bypassPermissions is used because those layers,
@@ -1193,11 +1205,13 @@ while :; do
     worker_env=() seen_names=""
     IFS=' ' read -r -a extra_names <<<"$WORKER_ENV_NAMES" || true
     for v in HOME USER LOGNAME SHELL PATH TMPDIR LANG LC_ALL LC_CTYPE LC_MESSAGES TERM TZ \
-      __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME \
+      __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME \
       HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy \
       NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR ${extra_names[@]+"${extra_names[@]}"}; do
       [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
       case " $seen_names " in *" $v "*) continue ;; esac
+      # set below for every worker: the commander's own values never pass
+      case $v in GIT_CONFIG_GLOBAL | XDG_STATE_HOME | WATCHMAN_NO_SPAWN) continue ;; esac
       seen_names="$seen_names $v"
       if [ -z "${!v+x}" ]; then continue; fi
       # A proxy value with credentials (user:pass@host, with or without a scheme) passes only
@@ -1215,7 +1229,8 @@ while :; do
     worker_env+=(WAW_HOME="$AS_HOME" AGENT_ROLE="$role" AGENT_NAME="$name" AGENT_SCOPE="$dir"
       AGENT_RUN_DIR="$out" AGENT_EVENTS="$events" AGENT_ALLOW_INSTALL="$allow_install"
       AGENT_GRANTS="$grants" BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=1800000
-      MCP_TOOL_TIMEOUT=600000)
+      MCP_TOOL_TIMEOUT=600000
+      GIT_CONFIG_GLOBAL="$WORKER_GITCONFIG" XDG_STATE_HOME="$WORKER_STATE_HOME" WATCHMAN_NO_SPAWN=1)
     # A project's stop-time checks (CLAUDE_CHECKS, a project's stop-check hook) keep
     # a session working until the changed files are green: only a developer can act on that;
     # the others would spend their turns on it (and see other workers' unfinished changes).
