@@ -8,6 +8,8 @@
 #   attack.sh --role decide --question <file> [--task <file>]
 #                                 /auto-pilot: answer the decision questions (Q1, ...) in the file
 #   common:   [--repo <dir>] (run as if started there) [--max-bytes <n>]
+#             [--keep-dir <dir>] (where invalid answers are kept; default: the directory of
+#             --task, else of --question, else ${TMPDIR:-/tmp}/waw-attack)
 #   attack.sh --check-config      validate the config, print the provider order and models
 #
 # Config: $WAW_CONFIG, else $WAW_HOME/config (WAW_HOME defaults to
@@ -23,9 +25,20 @@
 # Code under that route, read-only tools. A route's model: <NAME>_MODEL (NEXOS_MODEL, ...),
 # else AGENT_REVIEWER_MODEL; decide: <NAME>_DECIDE_MODEL, else AGENT_DECIDER_MODEL, else the
 # review model. Route nexos also falls back to NEXOS_CONFIG_DIR, then ~/.claude-nexos.
-# Providers are tried in order (default "codex gateway claude"); the first valid answer wins.
-# Unavailable (not installed, not authorized, not configured, failed, empty, timed out after
-# $ATTACK_TIMEOUT seconds, default 900) or an invalid answer -> next.
+# Providers are tried in order (default "codex gateway claude"; each named once); the first
+# valid answer wins. Unavailable (not installed, not authorized, not configured), failed,
+# empty, timed out, without a first output in time or an invalid answer -> next.
+# Environment, whole numbers of seconds:
+#   ATTACK_TIMEOUT       a call's deadline, at least 1; unset: 600 + 6 per 1000 bytes of the
+#                        input, at most 2400.
+#   ATTACK_FIRST_OUTPUT  how long a provider that reports progress (codex, claude and every
+#                        route) may take to its first model output; default 180, 0 = off.
+#                        opencode and gateway have only the deadline.
+#   ATTACK_HEARTBEAT     the interval of the "waiting:" lines; default 30, at least 1.
+#   ATTACK_TEST_RUNNER   tests only: "with_deadline" uses this script's own deadline runner
+#                        even where timeout or gtimeout exist.
+# A provider stopped for lack of output (or by the own deadline runner) gets TERM with its
+# children, and what is left after 3 seconds gets KILL.
 # Only regular files inside the repository, not ignored by git and without a secret-like name
 # (.env* except .env.example, keys, credentials) are added from a diff or a question file, the
 # rule files (CLAUDE.md, AGENTS.md, SECURITY.md) included; the files passed by option are sent as
@@ -38,10 +51,19 @@
 # input then ends with the cut documents and the omitted files. The reason also counts the
 # changed files that are not sent ("full (not sent: 1 changed file)"); they lower nothing.
 # A decide row counts only with every cell filled.
-# Output: "provider: <name>[:<model>]", "skipped: <name> (<reason>)" lines,
-# "coverage: full|tools|partial[ (<reason>)]", then the answer: the findings table or
-# "No findings."; for decide the decisions table.
-# Exit: 0 answered, 2 usage, 3 config, 4 no provider gave a valid answer.
+# Output, each line printed as it happens, per provider tried:
+#   "trying: <name>[:<model>] (timeout <T>s)"; for a provider that reports progress, while the
+#       first-output wait is on: "(timeout <T>s, first output within <N>s)"
+#   "waiting: <name> <n>s"            every heartbeat while it runs
+#   "skipped: <name> (<reason>)"      the unavailable reason, "no first output within <N>s",
+#       "timed out after <T>s", "invalid answer; raw: <file>" or "call failed: <line>"
+# An invalid answer is kept in <keep-dir>/attack-<role>-<name>.<random>, its stderr in the
+# same path with ".err".
+# Then, for the answer: "provider: <name>[:<model>]", "note: <name>: <text>" lines (the
+# adapter's notes), "coverage: full|tools|partial[ (<reason>)]", then the answer: the
+# findings table or "No findings."; for decide the decisions table.
+# Exit: 0 answered, 2 usage, 3 config, 4 no provider gave a valid answer, 5 role review or
+# security answered with partial coverage (the whole output is printed; decide never exits 5).
 set -euo pipefail
 unset CDPATH
 
@@ -55,14 +77,25 @@ NEXOS_CONFIG_DIR WORKER_ROUTE AGENT_INVESTIGATOR_MODEL AGENT_DEVELOPER_MODEL AGE
 AGENT_TESTER_MODEL AGENT_DECIDER_MODEL AGENT_INVESTIGATOR_ROUTE AGENT_DEVELOPER_ROUTE
 AGENT_REVIEWER_ROUTE AGENT_TESTER_ROUTE"
 KEYS=${KEYS//$'\n'/ }
-TIMEOUT=${ATTACK_TIMEOUT:-900}
 
 die() {
   printf 'attack.sh: %s\n' "$2" >&2
   exit "$1"
 }
 
-role="" input="" task_file="" question_file="" base="" repo_dir="" max_bytes=200000 check=0
+# whole <label> <value> <min>: the value as a decimal number (08 is 8), else exit 2.
+whole() {
+  [[ $2 =~ ^[0-9]+$ ]] && [ "$((10#$2))" -ge "$3" ] ||
+    die 2 "$1 must be a whole number, at least $3"
+  printf '%s' "$((10#$2))"
+}
+# int_env <name> <default> <min>: a numeric setting from the environment, or the default.
+int_env() {
+  local v=${!1:-}
+  if [ -z "$v" ]; then printf '%s' "$2"; else whole "$1" "$v" "$3"; fi
+}
+
+role="" input="" task_file="" question_file="" base="" repo_dir="" max_bytes=200000 check=0 keep_dir=""
 while [ $# -gt 0 ]; do
   case $1 in
     --role) [ $# -ge 2 ] || die 2 "--role needs a value"; role=$2; shift ;;
@@ -71,14 +104,18 @@ while [ $# -gt 0 ]; do
     --base) [ $# -ge 2 ] || die 2 "--base needs a ref"; base=$2; shift ;;
     --repo) [ $# -ge 2 ] || die 2 "--repo needs a directory"; repo_dir=$2; shift ;;
     --max-bytes) [ $# -ge 2 ] || die 2 "--max-bytes needs a number"; max_bytes=$2; shift ;;
+    --keep-dir) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "--keep-dir needs a directory"; keep_dir=$2; shift ;;
     --check-config) check=1 ;;
     -h | --help) awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "$0"; exit 0 ;;
     *) die 2 "unknown argument: $1 (see attack.sh --help)" ;;
   esac
   shift
 done
-case $max_bytes in '' | *[!0-9]*) die 2 "--max-bytes must be a number" ;; esac
-case $TIMEOUT in '' | *[!0-9]* | 0) die 2 "ATTACK_TIMEOUT must be a number of seconds" ;; esac
+max_bytes=$(whole --max-bytes "$max_bytes" 0)
+# An empty TIMEOUT is scaled to the input once that is built.
+TIMEOUT=$(int_env ATTACK_TIMEOUT "" 1)
+FIRST_OUTPUT=$(int_env ATTACK_FIRST_OUTPUT 180 0)
+HEARTBEAT=$(int_env ATTACK_HEARTBEAT 30 1)
 if [ -n "$repo_dir" ]; then
   cd -P -- "$repo_dir" 2>/dev/null || die 2 "--repo: not a directory: $repo_dir"
 fi
@@ -141,7 +178,10 @@ route_dir() {
 is_route() { case " $BUILTIN " in *" $1 "*) return 1 ;; esac; [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]]; }
 
 ORDER=${CFG_PROVIDERS:-codex gateway claude}
+seen=" "
 for p in $ORDER; do
+  case $seen in *" $p "*) cfg_errors="${cfg_errors}PROVIDERS: duplicate provider '$p'"$'\n'; continue ;; esac
+  seen="$seen$p "
   case " $BUILTIN " in *" $p "*) continue ;; esac
   is_route "$p" || { cfg_errors="${cfg_errors}PROVIDERS: bad provider name '$p'"$'\n'; continue; }
   [ "$p" = nexos ] || [ -d "$(route_dir "$p")" ] ||
@@ -244,11 +284,31 @@ esac
 # repository's top level, where the file names git prints are valid.
 abs() { case $1 in '' | /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
 question_file=$(abs "$question_file") task_file=$(abs "$task_file")
+if [ -z "$keep_dir" ]; then
+  keep_dir=${task_file:-$question_file}
+  if [ -n "$keep_dir" ]; then
+    keep_dir=${keep_dir%/*}
+    keep_dir=${keep_dir:-/}
+  else
+    keep_dir=${TMPDIR:-/tmp}
+    keep_dir=${keep_dir%/}/waw-attack
+  fi
+fi
+keep_dir=$(abs "$keep_dir")
 
 # ------------------------------------------------------------------ the input
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/waw.attack.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+# The provider runs in the background, where it ignores an interrupt: an ending script stops it.
+rpid=""
+# shellcheck disable=SC2329 # called by the EXIT trap
+cleanup() {
+  [ -z "$rpid" ] || stop_tree "$rpid" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Every git call of this script runs on the host: no fsmonitor (it is a program the repository
 # configures).
@@ -436,6 +496,10 @@ done
   fi
 } >"$tmp/input.base"
 awk '!seen[$0]++' "$tmp/omitted" >"$tmp/omitted.list"
+if [ -z "$TIMEOUT" ]; then
+  TIMEOUT=$((600 + 6 * $(wc -c <"$tmp/input.base" | tr -d ' ') / 1000))
+  [ "$TIMEOUT" -le 2400 ] || TIMEOUT=2400
+fi
 
 # codex_diff_cmd: the git command for the whole change, with the exclusions of the diff above.
 codex_diff_cmd() {
@@ -541,7 +605,7 @@ unavailable() {
 }
 
 # kill_tree <pid>: stop the process, end all its descendants, then end it; prints the pids.
-# shellcheck disable=SC2329 # called by with_deadline
+# shellcheck disable=SC2329 # called by stop_tree
 kill_tree() {
   local child
   kill -STOP "$1" 2>/dev/null || return 0
@@ -553,11 +617,26 @@ kill_tree() {
   echo "$1"
 }
 
+# stop_tree <pid>: end the process and its descendants; what ignores TERM gets KILL after a
+# grace of 3 seconds.
+stop_tree() {
+  local pids q g alive=""
+  pids=$(kill_tree "$1")
+  for g in 1 2 3 4; do
+    alive=""
+    for q in $pids; do if kill -0 "$q" 2>/dev/null; then alive="$alive $q"; fi; done
+    [ -n "$alive" ] || return 0
+    [ "$g" = 4 ] || sleep 1
+  done
+  for q in $alive; do kill -KILL "$q" 2>/dev/null || true; done
+}
+
 # with_deadline <cmd...>: run the command; after TIMEOUT seconds end it with its children
 # and return 124, as timeout(1) does. For machines without timeout and gtimeout.
 # shellcheck disable=SC2329 # called through the runner array of run_provider
 with_deadline() {
   local pid wd rc=0
+  trap - EXIT INT TERM # it runs in the background: the script's cleanup is not its own
   "$@" &
   pid=$!
   (
@@ -565,15 +644,7 @@ with_deadline() {
     while kill -0 "$pid" 2>/dev/null; do
       if [ "$n" -ge "$TIMEOUT" ]; then
         : >"$tmp/timed-out"
-        pids=$(kill_tree "$pid")
-        # What ignores TERM gets KILL after a grace of 3 seconds.
-        for g in 1 2 3 4; do
-          alive=""
-          for q in $pids; do if kill -0 "$q" 2>/dev/null; then alive="$alive $q"; fi; done
-          [ -n "$alive" ] || exit 0
-          [ "$g" = 4 ] || sleep 1
-        done
-        for q in $alive; do kill -KILL "$q" 2>/dev/null || true; done
+        stop_tree "$pid"
         exit 0
       fi
       sleep 1
@@ -592,12 +663,25 @@ with_deadline() {
   return "$rc"
 }
 
-# run_provider <provider>: one attempt, answer in $tmp/answer. Returns 124 on timeout, 1 on
-# an empty answer, the provider's status when it fails.
+# first_output_wait <provider>: the seconds it has to its first model output; 0 when that is
+# not enforced: switched off, or an adapter that does not mark $ATTACK_PROGRESS.
+first_output_wait() {
+  if [ "$1" = codex ] || [ "$1" = claude ] || is_route "$1"; then
+    printf '%s' "$FIRST_OUTPUT"
+  else
+    printf 0
+  fi
+}
+
+# run_provider <provider>: one attempt, answer in $tmp/answer; prints the trying and waiting
+# lines. Returns 124 on timeout, 125 on no first output, 1 on an empty answer, the
+# provider's status when it fails.
 run_provider() {
-  local rc=0
+  local rc=0 n=0 first m
   local -a runner=(with_deadline)
-  if command -v timeout >/dev/null 2>&1; then
+  if [ "${ATTACK_TEST_RUNNER:-}" = with_deadline ]; then
+    :
+  elif command -v timeout >/dev/null 2>&1; then
     runner=(timeout -k 5 "$TIMEOUT")
   elif command -v gtimeout >/dev/null 2>&1; then
     runner=(gtimeout -k 5 "$TIMEOUT")
@@ -612,7 +696,30 @@ run_provider() {
     ROUTE_CONFIG_DIR=$(route_dir "$1")
   fi
   ATTACK_MODEL=$(model_of "$1")
-  "${runner[@]}" "$adapter" "$tmp/input" >"$tmp/answer" 2>"$tmp/err" || rc=$?
+  : >"$tmp/progress"
+  export ATTACK_PROGRESS=$tmp/progress
+  rm -f "$tmp/timed-out"
+  first=$(first_output_wait "$1")
+  m=$ATTACK_MODEL
+  printf 'trying: %s%s (timeout %ss' "$1" "${m:+:$m}" "$TIMEOUT"
+  [ "$first" = 0 ] || printf ', first output within %ss' "$first"
+  printf ')\n'
+  "${runner[@]}" "$adapter" "$tmp/input" >"$tmp/answer" 2>"$tmp/err" &
+  rpid=$!
+  while kill -0 "$rpid" 2>/dev/null; do
+    sleep 1
+    n=$((n + 1))
+    kill -0 "$rpid" 2>/dev/null || break
+    if [ "$first" -gt 0 ] && [ "$n" -ge "$first" ] && [ ! -s "$tmp/progress" ]; then
+      stop_tree "$rpid"
+      wait "$rpid" 2>/dev/null || true
+      rpid=""
+      return 125
+    fi
+    [ $((n % HEARTBEAT)) != 0 ] || printf 'waiting: %s %ss\n' "$1" "$n"
+  done
+  wait "$rpid" || rc=$?
+  rpid=""
   [ "$rc" = 0 ] || return "$rc"
   grep -q '[^[:space:]]' "$tmp/answer"
 }
@@ -648,6 +755,14 @@ valid_answer() {
     }' "$1"
 }
 
+# keep_invalid <provider>: keep the answer and the stderr of an invalid answer under a name
+# of their own, so runs that share the directory lose nothing; prints the answer's path.
+keep_invalid() {
+  local f
+  mkdir -p "$keep_dir" && f=$(mktemp "$keep_dir/attack-$role-$1.XXXXXX") &&
+    cp "$tmp/answer" "$f" && cp "$tmp/err" "$f.err" && printf '%s' "$f"
+}
+
 # The gateway's key from the macOS keychain, read once and only when the gateway is in the order.
 if [ -n "$CFG_GATEWAY_KEYCHAIN" ]; then
   case " $ORDER " in
@@ -658,7 +773,6 @@ if [ -n "$CFG_GATEWAY_KEYCHAIN" ]; then
   esac
 fi
 
-skipped=""
 for p in $ORDER; do
   why=$(unavailable "$p")
   if [ -z "$why" ]; then
@@ -668,14 +782,22 @@ for p in $ORDER; do
       m=$(model_of "$p")
       cov=$(coverage_of "$p")
       printf 'provider: %s%s\n' "$p" "${m:+:$m}"
-      printf '%s' "$skipped"
+      { grep '^note: ' "$tmp/err" || true; } | sed "s/^note: /note: $p: /"
       printf 'coverage: %s\n' "$cov"
       cat "$tmp/answer"
+      case $role:$cov in review:partial* | security:partial*) exit 5 ;; esac
       exit 0
     fi
     case $rc in
-      0) why="invalid answer" ;;
-      124) why="timed out" ;;
+      0)
+        if raw=$(keep_invalid "$p"); then
+          why="invalid answer; raw: $raw"
+        else
+          why="invalid answer; raw: not kept, cannot write in $keep_dir"
+        fi
+        ;;
+      124 | 137) why="timed out after ${TIMEOUT}s" ;; # 137: timeout -k had to KILL it
+      125) why="no first output within $(first_output_wait "$p")s" ;;
       *)
         # The provider's last line says why (a usage limit, a bad model name).
         last=$({ grep '[^[:space:]]' "$tmp/err" 2>/dev/null || true; } | tail -n 1 | tr -d '\r' | cut -c1-160)
@@ -684,7 +806,6 @@ for p in $ORDER; do
     esac
     [ "$rc" = 0 ] || tail -n 5 "$tmp/err" >&2 || true
   fi
-  skipped="${skipped}skipped: $p ($why)"$'\n'
+  printf 'skipped: %s (%s)\n' "$p" "$why"
 done
-printf '%s' "$skipped"
 die 4 "no provider answered with a valid answer ($ORDER)"
