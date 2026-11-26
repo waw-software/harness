@@ -111,11 +111,16 @@
 # GIT_CONFIG_GLOBAL (lib/worker.gitconfig), a private XDG_STATE_HOME,
 # ~/.local/state/waw/s.XXXXXX per run (short: watchman's socket path must stay under 104
 # bytes; the root is outside every write list, only the run's watchman/ in it is writable),
-# and WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
+# and WATCHMAN_NO_SPAWN=1, in place of the commander's own values. A run exits 2 when --cwd or
+# --out contains ~/.local/state, is it or is inside it. The state dir names its run's pid in
+# .owner; a later run removes it after a day only when that process is gone. The report is
+# staged as ~/.local/state/waw/r.XXXXXX and renamed onto <name>.result.json, so a link planted
+# there is replaced, not followed (staged files left a day are removed too).
 # Exit: 0 report written, 2 usage, 3 config, 4 the worker failed or gave no valid report,
 # 5 timed out, 6 stopped, 7 slot-wait timeout. Portable to macOS /bin/bash 3.2.
-# A tester's pass-with-exclusions report whose exclusions do not name every check that did not
-# pass is invalid (exit 4; the result keeps the report and gets an error).
+# A tester's pass-with-exclusions report that does not give every check that did not pass its
+# own exclusion, of the same name and command, is invalid (exit 4; the result keeps the report
+# and gets an error).
 set -euo pipefail
 unset CDPATH
 
@@ -1006,6 +1011,23 @@ if [ "$role" = tester ]; then
 fi
 mkdir -p "$out"
 out=$(cd "$out" && pwd -P)
+# --cwd and --out are writable by the worker: neither may overlap ~/.local/state (the workers'
+# state root, and the developer's own state). -ef, so another spelling of a path counts too.
+within() { # within <path> <dir>: <path> is <dir> or inside it
+  local p=$1
+  while :; do
+    if [ "$p" -ef "$2" ]; then return 0; fi
+    [ "$p" != / ] || return 1
+    p=$(dirname "$p")
+  done
+}
+mkdir -p "$HOME/.local/state" || die 3 "could not create $HOME/.local/state"
+user_state=$(cd "$HOME/.local/state" && pwd -P)
+for flag in cwd out; do
+  if [ "$flag" = cwd ]; then p=$dir; else p=$out; fi
+  ! within "$user_state" "$p" || die 2 "--$flag $p contains the workers' state root ~/.local/state: refused"
+  ! within "$p" "$user_state" || die 2 "--$flag $p is inside the workers' state root ~/.local/state: refused"
+done
 name=${name:-$role-$(date +%H%M%S)}
 [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die 2 "--name: letters, digits, . _ - (at most 64)"
 [ ! -e "$out/$name.jsonl" ] || die 2 "--name $name is taken in $out: give another"
@@ -1018,11 +1040,19 @@ events=$out/events.log runfile=$out/$name.pid
 # the run's own XDG_STATE_HOME, in a root no sandbox can write: no worker can change another's
 state_root=$HOME/.local/state/waw
 mkdir -p "$state_root" || die 3 "could not create $state_root"
-# what killed runs left behind
-find "$state_root" -maxdepth 1 -name 's.*' -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+# what killed runs left behind: staged reports, and state dirs whose owner (.owner) is gone
+find "$state_root" -maxdepth 1 -name 'r.*' -type f -mtime +0 -exec rm -f {} + 2>/dev/null || true
+{ find "$state_root" -maxdepth 1 -name 's.*' -type d -mtime +0 2>/dev/null || true; } |
+  while IFS= read -r d; do
+    owner=$(cat "$d/.owner" 2>/dev/null) || owner=''
+    if ! [[ $owner =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$d" 2>/dev/null || true
+    fi
+  done
 WORKER_STATE_HOME=$(mktemp -d "$state_root/s.XXXXXX") || die 3 "could not create a state dir in $state_root"
 # until the run's own EXIT trap (cleanup) takes over
 trap 'rm -rf "$WORKER_STATE_HOME"' EXIT
+printf '%s\n' "$$" >"$WORKER_STATE_HOME/.owner" || die 3 "could not write $WORKER_STATE_HOME/.owner"
 mkdir "$WORKER_STATE_HOME/watchman" || die 3 "could not create $WORKER_STATE_HOME/watchman"
 # Claude Code's version locks stay where the developer's updater looks, or it may remove a version in use
 claude_state=${XDG_STATE_HOME:-$HOME/.local/state}/claude
@@ -1087,9 +1117,18 @@ mkdir -p "$REGISTRY"
 entry=$REGISTRY/$$.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$$" "$queued_started" "$name" "$role" "$model" "$dir" "$log" "$out" >"$entry"
 : >"$runfile"
-lease='' lease_held=0 acq_pid='' seg_pid=''
+lease='' lease_held=0 acq_pid='' seg_pid='' stage=''
+# The report is built in a file of the state root, which no worker can write, and renamed onto
+# $result: $out is the worker's to write, and a link it plants there must not be followed.
+new_stage() { stage=$(mktemp "$state_root/r.XXXXXX") || die 3 "could not stage the report in $state_root"; }
+publish() { # rename $stage onto $result, replacing a link there, also one to a directory
+  chmod 644 "$stage"
+  if [ "$(uname -s)" = Darwin ]; then /bin/mv -fh "$stage" "$result"; else mv -fT "$stage" "$result"; fi
+  stage=''
+}
 cleanup() { # idempotent: runs from the traps and at exit; releases the lease if we still hold it
   rm -f "$entry" "$runfile" "$out/$name.queued"
+  [ -z "$stage" ] || rm -f "$stage"
   rm -rf "$WORKER_STATE_HOME" 2>/dev/null || true # a leftover must not keep the slot
   if [ "$lease_held" = 1 ]; then
     python3 -I "$HERE/slots.py" release --state-dir "$STATE_DIR" --lease "$lease" \
@@ -1118,7 +1157,9 @@ trap on_signal INT TERM
 # slot_final <status> <run_status>: the report of a run that never started a model (a queue
 # timeout, or a stop that landed before admission): the result file and the normal last line.
 slot_final() {
-  jq -n --arg s "$2" '{run_status: $s}' >"$result"
+  new_stage
+  jq -n --arg s "$2" '{run_status: $s}' >"$stage"
+  publish
   printf '%s %s turns=0 time=%ss result=%s session=-\n' \
     "$name" "$1" "$(( $(date +%s) - queued_started ))" "$result"
 }
@@ -1347,31 +1388,36 @@ if [ -n "$results" ]; then
       (map(.usage.cache_creation_input_tokens // 0) | add) ] | @tsv')
 fi
 [ "$runner" != codex ] || cost=sub
+new_stage
 if [ "$status" = ok ] && [ -n "$final" ] &&
   printf '%s' "$final" | jq -e '.structured_output | type == "object"' >/dev/null 2>&1; then
   # a Codex report fills the role schema's optional fields with null (strict schema): dropped
   printf '%s' "$final" | jq 'if $cx then .structured_output | walk(if type == "object" then with_entries(select(.value != null)) else . end) else .structured_output end' \
-    --argjson cx "$([ "$runner" = codex ] && echo true || echo false)" >"$result"
-  # a tester that excludes checks accounts for every one that did not pass; the schema cannot say so
-  if [ "$role" = tester ] && ! jq -e '[(.exclusions // [])[] | .check] as $ex
+    --argjson cx "$([ "$runner" = codex ] && echo true || echo false)" >"$stage"
+  # a tester that excludes checks accounts for every one that did not pass, each with its own
+  # exclusion of the same name and command; the schema cannot say so
+  if [ "$role" = tester ] && ! jq -e '[(.exclusions // [])[] | [.check, .command]] as $ex
+      | [(.checks // [])[] | select(.result != "pass") | [.name, .command]] as $np
       | .status != "pass-with-exclusions" or (($ex | length) > 0
-        and all((.checks // [])[] | select(.result != "pass"); .name as $n | any($ex[]; . == $n)))' \
-      "$result" >/dev/null 2>&1; then
-    jq '. + {error: "pass-with-exclusions must list every check that did not pass in exclusions"}' \
-      "$result" >"$result.tmp" && mv -f "$result.tmp" "$result"
+        and all($np[]; . as $c
+          | ([$ex[] | select(. == $c)] | length) >= ([$np[] | select(. == $c)] | length)))' \
+      "$stage" >/dev/null 2>&1; then
+    checked=$(jq '. + {error: "pass-with-exclusions must list every check that did not pass in exclusions"}' "$stage")
+    printf '%s\n' "$checked" >"$stage"
     status=failed
   fi
 elif [ -n "$final" ] && [ "$status" != ok ]; then
   # Stopped or timed out after a segment finished: keep what that segment reported, marked.
-  printf '%s' "$final" | jq --arg s "$status" '(.structured_output // {}) + {run_status: $s}' >"$result"
+  printf '%s' "$final" | jq --arg s "$status" '(.structured_output // {}) + {run_status: $s}' >"$stage"
 elif [ -n "$final" ]; then
   status=failed
-  printf '%s' "$final" | jq '{error: ("no structured report: " + (.subtype // "unknown")), is_error, result}' >"$result"
+  printf '%s' "$final" | jq '{error: ("no structured report: " + (.subtype // "unknown")), is_error, result}' >"$stage"
 else
   [ "$status" != ok ] || status=failed
   last=$(grep '[^[:space:]]' "$err" 2>/dev/null | tail -n 1 | cut -c1-300 || true)
-  jq -n --arg why "worker ended without a result ($status, exit $rc)${last:+: $last}" '{error: $why}' >"$result"
+  jq -n --arg why "worker ended without a result ($status, exit $rc)${last:+: $last}" '{error: $why}' >"$stage"
 fi
+publish
 
 tsv=$out/runs.tsv
 [ -f "$tsv" ] || printf 'started\tname\tsession\trole\tmodel\tstatus\tturns\tseconds\tin_tokens\tout_tokens\tcost_estimate_usd\tuncached_in\tcache_read\tcache_write\n' >"$tsv"

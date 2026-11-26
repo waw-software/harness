@@ -70,12 +70,24 @@ EOF
   assert_exit 0 report_run ex-listed "$base,\"checks\":[$unit],\"exclusions\":$ex}"
   assert_eq "$(result ex-listed | jq -r 'has("error")')" false "a complete report has no error"
 
+  # a link planted at <result>.tmp, a path in the worker's run directory
+  mkdir -p "$TEST_ROOT/report-ex-missing/.ship/t/agents"
+  printf 'keep me\n' >"$TEST_ROOT/tmp-victim"
+  ln -s "$TEST_ROOT/tmp-victim" "$TEST_ROOT/report-ex-missing/.ship/t/agents/ex-missing.result.json.tmp"
   assert_exit 4 report_run ex-missing "$base,\"checks\":[$unit]}"
+  assert_eq "$(cat "$TEST_ROOT/tmp-victim")" "keep me" "the target of a planted result.json.tmp link"
   assert_exit 4 report_run ex-empty "$base,\"checks\":[$unit],\"exclusions\":[]}"
   assert_exit 4 report_run ex-partial "$base,\"checks\":[$unit,$lint],\"exclusions\":$ex}"
   for name in ex-missing ex-empty ex-partial; do
     assert_eq "$(result "$name" | jq -r .error)" "$err" "$name: the reason"
     assert_eq "$(result "$name" | jq -r '.status + " " + .checks[0].name')" "pass-with-exclusions unit" "$name: the report is kept"
+  done
+
+  # an exclusion covers one check by name and command
+  assert_exit 4 report_run ex-same-name "$base,\"checks\":[$unit,{\"name\":\"unit\",\"command\":\"u2\",\"result\":\"fail\"}],\"exclusions\":$ex}"
+  assert_exit 4 report_run ex-other-command "$base,\"checks\":[$unit],\"exclusions\":[{\"check\":\"unit\",\"command\":\"other\",\"reason\":\"environment\"}]}"
+  for name in ex-same-name ex-other-command; do
+    assert_eq "$(result "$name" | jq -r .error)" "$err" "$name: the reason"
   done
 }
 

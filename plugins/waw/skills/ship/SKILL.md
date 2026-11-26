@@ -178,7 +178,8 @@ Start the tester and the review at the same time; they only read the code.
    criterion as proven by code reading or unit tests alone; what could not be run goes
    under "Not covered". A tester's `pass-with-exclusions` proves only what it proved; each
    exclusion goes under "Not covered". `blocked` is not a result: fix the cause and run the
-   tester again; still blocked after that is a stop ("Stops").
+   tester again; still blocked after that is a stop ("Stops"): no push and no pull request
+   until a tester run is not `blocked`, under `/auto-pilot` too.
 5. **Documents**: statements in the project's documents that this change made false are
    fixed by a developer brief, once, now. A decision that changes what the product does or
    how it is built goes where the project keeps decisions, as accepted: the developer's
