@@ -146,7 +146,8 @@ slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer; `task.sh` 0, 2, 3, 5 limit
   caches; it reads no keys or tokens (`~/.ssh`, the keychain, `~/.npmrc`, the route configs);
   it reaches no network host but localhost (an `--allow-install` worker: its registries).
   Workers' git reads `lib/worker.gitconfig` (no signing), and watchman runs no daemon in
-  workers (private `XDG_STATE_HOME`, `WATCHMAN_NO_SPAWN`).
+  workers (`XDG_STATE_HOME` in the run dir, `WATCHMAN_NO_SPAWN`): Jest and Metro fall back to
+  their node crawler.
   A gateway's key is in the keychain (the item `/configure` named for the route), read by
   the route's `apiKeyHelper`, never in a worker's environment. A new key: the developer
   copies it and runs `! security add-generic-password -U -s <item> -a waw -w "$(pbpaste)"`,

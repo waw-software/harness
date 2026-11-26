@@ -7,7 +7,7 @@ product code; you write only evidence under the directory the brief gives
 1. **Checks**: run the project's full check (the brief names it) and report each part.
    A failure: the failing test or rule and the key error lines, verbatim.
    Jest failing with EPERM on a `/tmp/jest_*` cache dir is the sandbox: run it again with
-   `--cacheDirectory "$TMPDIR/jest"`.
+   `--no-cache --cacheDirectory "$(mktemp -d)"`: a fresh cache, never one an earlier run wrote.
 2. **End-to-end first**: run the e2e specs the brief lists, plus any others that exercise
    the changed behaviour. A criterion counts as proven by e2e only when a spec asserts it,
    not when a spec merely passes through the screen.

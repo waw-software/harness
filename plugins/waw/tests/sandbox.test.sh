@@ -206,16 +206,19 @@ case_proxy_credentials() {
 }
 
 case_worker_git_and_state_env() {
-  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo
-  XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig \
-    AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME" \
+  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo state
+  XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig WATCHMAN_NO_SPAWN=0 \
+    AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME WATCHMAN_NO_SPAWN" \
     assert_exit 0 run_worker sb-gitenv developer "$ROOT/gitenv"
   [ -s "$f" ] || fail "the fake claude recorded no environment"
+  state=$(cd "$ROOT/gitenv/.ship/t/agents" && pwd -P)/sb-gitenv.state
   grep -qxF "GIT_CONFIG_GLOBAL=$cfg" "$f" || fail "the worker's global git config is not the plugin's"
-  grep -qxF "XDG_STATE_HOME=$HOME/.cache/waw/xdg-state" "$f" || fail "the worker has no private XDG_STATE_HOME"
+  grep -qxF "XDG_STATE_HOME=$state" "$f" || fail "the worker has no XDG_STATE_HOME of its own in the run dir"
   grep -qxF "WATCHMAN_NO_SPAWN=1" "$f" || fail "WATCHMAN_NO_SPAWN missing"
-  ! grep -qxF "XDG_STATE_HOME=$TEST_ROOT/elsewhere" "$f" || fail "the commander's XDG_STATE_HOME reached the worker"
-  [ -d "$HOME/.cache/waw/xdg-state" ] || fail "the worker's state dir was not created"
+  ! grep -qF "$TEST_ROOT/elsewhere" "$f" || fail "a commander's path reached the worker"
+  ! grep -qxF "WATCHMAN_NO_SPAWN=0" "$f" || fail "the commander's WATCHMAN_NO_SPAWN reached the worker"
+  [ -d "$state" ] || fail "the worker's state dir was not created"
+  [ ! -e "$HOME/.cache/waw/xdg-state" ] || fail "a state dir shared by all workers was created"
   assert_eq "$(git config --file "$cfg" --list | cut -d= -f1 | sort | tr '\n' ' ')" \
     "commit.gpgsign tag.gpgsign user.email user.name " "keys of the worker's git config"
   printf '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n' >"$ROOT/signing.gitconfig"

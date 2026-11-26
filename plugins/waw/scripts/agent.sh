@@ -108,10 +108,12 @@
 # hooks match command text and stop accidents; the sandbox is the isolation, which is also why
 # bypassPermissions is safe where a project allows it. A tester does not start while a
 # developer works in the same --cwd: it tests a settled tree. Every worker's env sets
-# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), XDG_STATE_HOME (~/.cache/waw/xdg-state) and
-# WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
+# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), a private XDG_STATE_HOME in the run dir
+# (<name>.state) and WATCHMAN_NO_SPAWN=1, in place of the commander's own values.
 # Exit: 0 report written, 2 usage, 3 config, 4 the worker failed or gave no valid report,
 # 5 timed out, 6 stopped, 7 slot-wait timeout. Portable to macOS /bin/bash 3.2.
+# A tester's pass-with-exclusions report whose exclusions do not name every check that did not
+# pass is invalid (exit 4; the result keeps the report and gets an error).
 set -euo pipefail
 unset CDPATH
 
@@ -321,8 +323,7 @@ for _d in "${CLAUDE_CONFIG_DIR:-/nonexistent}"/ "$AS_HOME"/workers/*/ "${CFG_NEX
 done
 unset _d _f
 
-# A worker's git and watchman (their env: GIT_CONFIG_GLOBAL, XDG_STATE_HOME).
-WORKER_STATE_HOME="$HOME/.cache/waw/xdg-state"
+# A worker's git (GIT_CONFIG_GLOBAL in its env).
 WORKER_GITCONFIG="$HERE/lib/worker.gitconfig"
 
 # read_deny_extra <worktree> <run dir>: the paths of $WAW_HOME/read-deny, one per line (an
@@ -373,9 +374,9 @@ registry_hosts() {
 #                its package registries, and the pnpm 12 store operation lock, which pnpm
 #                keeps in /tmp/pnpm-store-operation-locks-<uid>), localhost allowed (tests start servers); no
 #                unsandboxed retry, and no worker without the sandbox. Watchman gets a private
-#                XDG_STATE_HOME (the worker's env) and spawns no daemon (its macOS daemon starts
-#                through launchd, outside the sandbox); ~/.local/state/watchman is not writable
-#                (its state file holds triggers).
+#                XDG_STATE_HOME in the run dir (<name>.state, in the worker's env) and spawns no
+#                daemon (its macOS daemon starts through launchd, outside the sandbox);
+#                ~/.local/state/watchman is not writable (its state file holds triggers).
 # AGENT_SANDBOX=off leaves the sandbox out, for debugging only: sandbox-check (and so
 # /auto-pilot) refuses then.
 worker_settings() {
@@ -1006,6 +1007,9 @@ if [ "$runner" = codex ]; then session=${resume:-}; else session=${resume:-$(uui
 
 log=$out/$name.jsonl err=$out/$name.err result=$out/$name.result.json
 events=$out/events.log runfile=$out/$name.pid
+# the run's own XDG_STATE_HOME: no worker can break another's
+WORKER_STATE_HOME=$out/$name.state
+mkdir -p "$WORKER_STATE_HOME" || die 3 "could not create $WORKER_STATE_HOME"
 cp "$brief" "$out/$name.brief.md"
 : >"$log"
 : >"$err"
@@ -1019,7 +1023,6 @@ common=$(cat "$HERE/roles/common.md")
 
 [ -x "$guard" ] && [ -x "$push_guard" ] || die 3 "missing $guard or $push_guard"
 hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install") || die 3 "could not build the worker settings"
-mkdir -p "$WORKER_STATE_HOME" || die 3 "could not create $WORKER_STATE_HOME"
 
 # The OS sandbox confines Bash and its children; the file tools are held by worker-guard.sh
 # (physical path check) and the Read deny rules. bypassPermissions is used because those layers,
@@ -1331,6 +1334,15 @@ if [ "$status" = ok ] && [ -n "$final" ] &&
   # a Codex report fills the role schema's optional fields with null (strict schema): dropped
   printf '%s' "$final" | jq 'if $cx then .structured_output | walk(if type == "object" then with_entries(select(.value != null)) else . end) else .structured_output end' \
     --argjson cx "$([ "$runner" = codex ] && echo true || echo false)" >"$result"
+  # a tester that excludes checks accounts for every one that did not pass; the schema cannot say so
+  if [ "$role" = tester ] && ! jq -e '[(.exclusions // [])[] | .check] as $ex
+      | .status != "pass-with-exclusions" or (($ex | length) > 0
+        and all((.checks // [])[] | select(.result != "pass"); .name as $n | any($ex[]; . == $n)))' \
+      "$result" >/dev/null 2>&1; then
+    jq '. + {error: "pass-with-exclusions must list every check that did not pass in exclusions"}' \
+      "$result" >"$result.tmp" && mv -f "$result.tmp" "$result"
+    status=failed
+  fi
 elif [ -n "$final" ] && [ "$status" != ok ]; then
   # Stopped or timed out after a segment finished: keep what that segment reported, marked.
   printf '%s' "$final" | jq --arg s "$status" '(.structured_output // {}) + {run_status: $s}' >"$result"

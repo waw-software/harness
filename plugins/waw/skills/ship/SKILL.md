@@ -216,7 +216,8 @@ When all jobs are done, read two things:
 The report, in the pull request and in the chat:
 
 1. **Try it**: how to see it work in a minute.
-2. **Proof**: first one line, `tests: pass | pass-with-exclusions (<check>: <reason>; ...) | fail | blocked`.
+2. **Proof**: first one line, `tests: pass | pass-with-exclusions (<check>: <short summary>; ...) | fail | blocked`;
+   the raw error lines stay in `<dir>/evidence/`, never in the pull request.
    Then per acceptance criterion, how it was proven (the e2e specs run, or what the
    tester ran and with which tool) and what it showed, with the key screenshots.
 3. **E2E proposal**: from the tester, when there is one: the specs to add or extend and the

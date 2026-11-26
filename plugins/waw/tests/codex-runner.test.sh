@@ -24,7 +24,9 @@ printf 'Do the slice.\n' >"$TEST_ROOT/brief.md"
 OUT=$WT/.ship/t/agents
 
 # 1. a developer on codex: report, session, stream in Claude Code's form, args, env, home files
-line=$(OPENAI_API_KEY=sk-leak bash "$AGENT" run --role developer --brief "$TEST_ROOT/brief.md" --out "$OUT" --cwd "$WT" --name dev-a --quiet) ||
+line=$(OPENAI_API_KEY=sk-leak XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig \
+  WATCHMAN_NO_SPAWN=0 AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME WATCHMAN_NO_SPAWN" \
+  bash "$AGENT" run --role developer --brief "$TEST_ROOT/brief.md" --out "$OUT" --cwd "$WT" --name dev-a --quiet) ||
   fail "codex developer run failed: $line $(cat "$OUT/dev-a.err" 2>/dev/null)"
 assert_contains "$line" "dev-a ok turns=2" "final line"
 assert_contains "$line" "session=0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001" "the Codex thread id is the session"
@@ -44,8 +46,9 @@ assert_contains "$args" "\"$OUT\" = \"write\"" "run dir writable"
 assert_contains "$args" "\"AGENT_NAME\" = \"dev-a\"" "the shell gets AGENT_NAME for ask.sh"
 assert_contains "$args" "You run as a Codex session" "the Codex note is in the role prompt"
 assert_contains "$args" "\"GIT_CONFIG_GLOBAL\" = \"$SETUP_UNDER_TEST/lib/worker.gitconfig\"" "the shell gets the worker's git config"
-assert_contains "$args" "\"XDG_STATE_HOME\" = \"$HOME/.cache/waw/xdg-state\"" "the shell gets a private state dir"
+assert_contains "$args" "\"XDG_STATE_HOME\" = \"$OUT/dev-a.state\"" "the shell gets the run's own state dir"
 assert_contains "$args" '"WATCHMAN_NO_SPAWN" = "1"' "watchman spawns no daemon"
+case $args in *"$TEST_ROOT/elsewhere"* | *'"WATCHMAN_NO_SPAWN" = "0"'*) fail "a commander's value is in the codex args" ;; esac
 case $args in *.local/state/watchman*) fail "the developer's watchman state is in the codex args" ;; esac
 assert_contains "$args" "CODEX_HOME=$CX" "CODEX_HOME is the route dir"
 assert_contains "$args" "skills.config=[{ \"path\" = \"$HOME/.agents/skills/mine/SKILL.md\", \"enabled\" = false }]" "the developer's own skills are off"

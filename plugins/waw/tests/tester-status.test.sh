@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/tester-status.test.sh — the tester reports pass, pass-with-exclusions (with an
 # `exclusions` list), fail or blocked: the schema, its Codex strict copy, and the texts that
-# read the status. Sourced by tests/run.sh (SETUP_UNDER_TEST, fail, assert_contains).
+# read the status, and agent.sh's check of the exclusions. Sourced by tests/run.sh (TEST_ROOT,
+# SETUP_UNDER_TEST, fail, assert_eq, assert_contains, assert_exit).
 set -u
 
 PLUGIN=$SETUP_UNDER_TEST/..
@@ -44,8 +45,43 @@ case_text_reads_status() {
   done
 }
 
+report_run() { # report_run <name> <report JSON>: a tester run through agent.sh that reports it
+  local d=$TEST_ROOT/report-$1
+  mkdir -p "$d"
+  printf '%s' "$2" | jq -c . >"$TEST_ROOT/report.json" || fail "bad report JSON for $1"
+  printf 'tester status test brief\n' >"$d/brief.md"
+  bash "$SETUP_UNDER_TEST/agent.sh" run --role tester --brief "$d/brief.md" --out "$d/.ship/t/agents" \
+    --cwd "$d" --name "$1" --quiet >"$d/run.log" 2>&1
+}
+
+case_exclusions_enforced() {
+  local err='pass-with-exclusions must list every check that did not pass in exclusions'
+  local unit='{"name":"unit","command":"u","result":"fail"}' lint='{"name":"lint","command":"l","result":"not_run"}'
+  local ex='[{"check":"unit","command":"u","reason":"environment"}]' base name result
+  base='{"status":"pass-with-exclusions","criteria":[],"not_covered":[],"bugs":[]'
+  # a claude that reports what report_run wrote (the worker's environment is empty: paths inline)
+  cat >"$TEST_ROOT/bin/claude" <<EOF
+#!/bin/sh
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{},"total_cost_usd":0,"structured_output":%s}\n' "\$(cat "$TEST_ROOT/report.json")"
+EOF
+  chmod 755 "$TEST_ROOT/bin/claude"
+  result() { cat "$TEST_ROOT/report-$1/.ship/t/agents/$1.result.json"; }
+
+  assert_exit 0 report_run ex-listed "$base,\"checks\":[$unit],\"exclusions\":$ex}"
+  assert_eq "$(result ex-listed | jq -r 'has("error")')" false "a complete report has no error"
+
+  assert_exit 4 report_run ex-missing "$base,\"checks\":[$unit]}"
+  assert_exit 4 report_run ex-empty "$base,\"checks\":[$unit],\"exclusions\":[]}"
+  assert_exit 4 report_run ex-partial "$base,\"checks\":[$unit,$lint],\"exclusions\":$ex}"
+  for name in ex-missing ex-empty ex-partial; do
+    assert_eq "$(result "$name" | jq -r .error)" "$err" "$name: the reason"
+    assert_eq "$(result "$name" | jq -r '.status + " " + .checks[0].name')" "pass-with-exclusions unit" "$name: the report is kept"
+  done
+}
+
 case_status_enum
 case_exclusions_shape
 case_strict_copy
 case_text_reads_status
-printf 'tester-status.test.sh: all four cases passed\n'
+case_exclusions_enforced
+printf 'tester-status.test.sh: all five cases passed\n'
