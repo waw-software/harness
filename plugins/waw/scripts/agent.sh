@@ -27,7 +27,19 @@
 #         <name>.questions/   what it asked the commander (q<n>.question.json, q<n>.answer.txt)
 #         events.log          what needs the commander: QUESTION, BLOCKED, FAILING, STALLED,
 #                             TIMEOUT, one line each (agent.sh events follows it)
-#         runs.tsv            one line per run: time, role, model, status, turns, tokens, session
+#         runs.tsv            one line per run: time, role, model, status, turns, tokens, session;
+#                             cost_estimate_usd is the last result's total_cost_usd (Claude
+#                             Code's figure, cumulative over a resumed session: do not sum it)
+#       The ledger (lib/ledger.sh, in the waw home: it outlives the run directory) gets, under
+#       one run_id per run:
+#         run-start           when the run is admitted: name, role, model, route, session, ...
+#         event               each line of events.log of this worker, as it is written
+#         run                 at the end: status, turns, seconds, steers, segments, results,
+#                             tokens, and cost_usd priced from this run's own usage (cache
+#                             tiers included; cost_basis tokens, sub for Codex, none without a
+#                             price); cost_cc is the last total_cost_usd. A run ended by
+#                             INT or TERM: status interrupted. cost_incomplete: a segment gave
+#                             no result, or the run was interrupted.
 #       While the worker runs, prints one line per step it takes ("[name 1m05s] Bash pnpm
 #       test", "[name 1m20s] says: ...") and each event ("[name] !! QUESTION ..."), unless
 #       --quiet; at the end, always one last line:
@@ -125,6 +137,9 @@ set -euo pipefail
 unset CDPATH
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib/ledger.sh"
+# set by a run once its worker may start; empty means nothing goes to the ledger
+RUN_ID=''
 ROLES="investigator developer reviewer tester"
 AS_HOME=${WAW_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/waw}
 # One spelling: a worker's CLAUDE_CONFIG_DIR is built from it, and Claude Code keys the route's
@@ -541,10 +556,99 @@ EVT_FMT='if .type == "assistant" then
        else "O" end)
   else empty end'
 
-# emit <events file> <type> <name> <text>: one event line.
+# ledger_event <t> <type> <name> <text>: the ledger record of one event of this run.
+ledger_event() {
+  ledger_append "$(jq -nc --arg t "$1" --arg type "$2" --arg n "$3" --arg text "$4" \
+    --arg p "$L_PROJECT" --arg task "$L_TASK" --arg id "$RUN_ID" \
+    '{v: 1, kind: "event", t: $t, project: $p, task: $task, run_id: $id, name: $n,
+      type: $type, text: $text[0:400]}')"
+}
+
+# emit <events file> <type> <name> <text>: one event line, and in a run its ledger record.
 emit() {
   [ "$1" != - ] || return 0
   printf '%s %s %s: %s\n' "$(date +%H:%M:%S)" "$2" "$3" "$4" >>"$1"
+  [ -z "${RUN_ID:-}" ] || ledger_event "$(ledger_now)" "$2" "$3" "$4"
+}
+
+# forward_events <events file> <after line> <to line> <name>: the ledger records of the events
+# of this worker that others wrote there (ask.sh, approve-mcp.mjs): QUESTION, QUESTION-TIMEOUT,
+# APPROVAL. A line gives the time of day only: later than now, it is yesterday's.
+forward_events() {
+  local etime type text today now off day yesterday
+  while IFS=$'\t' read -r etime type text; do
+    read -r today now off < <(date '+%Y-%m-%d %H:%M:%S %z')
+    day=$today
+    if [[ $etime > $now ]]; then
+      # BSD date, else GNU date
+      yesterday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)
+      day=$yesterday
+    fi
+    ledger_event "${day}T$etime$off" "$type" "$4" "$text"
+  done < <(sed -n "$(($2 + 1)),${3}p" "$1" | awk -v n="$4:" '
+    $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $3 == n &&
+      ($2 == "QUESTION" || $2 == "QUESTION-TIMEOUT" || $2 == "APPROVAL") {
+      head = $1 " " $2 " " $3 " "
+      if (index($0, head) == 1) printf "%s\t%s\t%s\n", $1, $2, substr($0, length(head) + 1)
+    }')
+}
+
+# run_usage: this run's turns, tokens and cost as JSON, from its own result lines: their usage
+# is per run, their total_cost_usd is cumulative over the session, so only the last one is
+# kept (cost_cc). The 1h share of the cache writes comes from the results' cache_creation, else
+# from the run's answers (the last line of each message id), else it is all 5m.
+run_usage() {
+  jq -Rnc --arg price "$(price_any "$model")" --arg runner "$runner" '
+    def total(f): map(f // 0) | add // 0;
+    [inputs | fromjson? | objects] as $lines
+    | [$lines[] | select(.type == "result")] as $r
+    | (reduce ($lines[] | select(.type == "assistant" and .message.id != null and .message.usage != null))
+         as $a ({}; .[$a.message.id] = $a.message.usage) | [.[]]) as $answers
+    | ($r | total(.usage.cache_creation_input_tokens)) as $cw
+    | (if any($r[]; .usage.cache_creation != null)
+       then $r | total(.usage.cache_creation.ephemeral_1h_input_tokens)
+       else $answers | total(.cache_creation.ephemeral_1h_input_tokens) end
+       | if . > $cw then $cw else . end) as $cw1h
+    | {uncached_in: ($r | total(.usage.input_tokens)),
+       cache_read: ($r | total(.usage.cache_read_input_tokens)),
+       cache_write: $cw, cache_write_5m: ($cw - $cw1h), cache_write_1h: $cw1h,
+       out: ($r | total(.usage.output_tokens))} as $k
+    | ($price | split(" ") | map(tonumber)) as $p
+    | (if $runner == "codex" then "sub" elif ($p | length) == 5 then "tokens" else "none" end) as $basis
+    | {turns: ($r | total(.num_turns)), tokens: $k, cost_basis: $basis,
+       cost_usd: (if $basis == "tokens" then
+           ($k.uncached_in * $p[0] + $k.out * $p[1] + $k.cache_read * $p[2]
+             + $k.cache_write_5m * $p[3] + $k.cache_write_1h * $p[4]) / 1000000
+         else null end),
+       cost_cc: ($r | last | .total_cost_usd?),
+       results: ($r | length)}' "$log"
+}
+
+# ledger_run <run-start|run> [<further fields, JSON>]: a record of this run.
+ledger_run() {
+  local more=${2:-}
+  [ -n "$more" ] || more='{}'
+  ledger_append "$(jq -nc --arg kind "$1" --arg t "$(ledger_now)" --arg p "$L_PROJECT" \
+    --arg task "$L_TASK" --arg id "$RUN_ID" --arg name "$name" --arg role "$role" \
+    --arg model "$model" --arg route "$route" --arg runner "$runner" --arg session "$session" \
+    --arg resume "$resume" --arg commander "${CLAUDE_CODE_SESSION_ID:-}" --arg cwd "$dir" \
+    --arg out "$out" --argjson more "$more" '
+    def opt: if . == "" then null else . end;
+    {v: 1, kind: $kind, t: $t, project: $p, task: $task, run_id: $id, name: $name, role: $role,
+     model: $model, route: $route, runner: $runner, session: ($session | opt),
+     resumed: ($resume != ""), commander_session: ($commander | opt), cwd: $cwd,
+     run_dir: $out} + $more')"
+}
+
+# ledger_run_end <status> <seconds> <cost incomplete: true, or empty to tell from the results>
+ledger_run_end() {
+  local usage more
+  usage=$(run_usage) || usage='{}'
+  more=$(printf '%s' "$usage" | jq -c --arg s "$1" --arg end "$(ledger_now)" --arg secs "$2" \
+    --arg incomplete "$3" --argjson seg "$seg" '
+    . + {status: $s, end: $end, seconds: ($secs | tonumber), steers: $seg, segments: ($seg + 1),
+         cost_incomplete: ($incomplete == "true" or (.results // 0) < $seg + 1)}') || more=''
+  ledger_run run "$more"
 }
 
 # follow_log <log> <runfile|-> <name> <started epoch> <events file|-> <print 0|1>
@@ -555,6 +659,8 @@ emit() {
 follow_log() {
   local log=$1 runfile=$2 wname=$3 wstart=$4 events=$5 print=$6
   local seen=0 total alive el line root="" kind text last_tool="" fails=0 changed stalled=0 now chunk
+  # the events there before this run started are not its own
+  local ev_seen=${EV_START:-0} ev_total
   case $log in */.ship/*) root=${log%%/.ship/*}/ ;; esac
   changed=$(date +%s)
   while :; do
@@ -604,6 +710,13 @@ follow_log() {
             esac
           done < <(printf '%s\n' "$chunk" | jq -r "$EVT_FMT" 2>/dev/null)
         fi
+      fi
+    fi
+    if [ "$events" != - ] && [ -n "${RUN_ID:-}" ] && [ -f "$events" ]; then
+      ev_total=$(wc -l <"$events" | tr -d ' ')
+      if [ "$ev_total" -gt "$ev_seen" ]; then
+        forward_events "$events" "$ev_seen" "$ev_total" "$wname"
+        ev_seen=$ev_total
       fi
     fi
     [ "$alive" = 1 ] || break
@@ -1148,6 +1261,9 @@ on_signal() { # INT/TERM: stop the acquisition/worker child, wait for it, then r
   if [ -n "$seg_pid" ]; then
     while kill -0 "$seg_pid" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
   fi
+  if [ -n "$RUN_ID" ] && [ "$FINAL_WRITTEN" != 1 ]; then
+    ledger_run_end interrupted "$(($(date +%s) - started))" true
+  fi
   cleanup
   exit 130
 }
@@ -1211,6 +1327,18 @@ done
 
 started=$(date +%s)
 started_iso=$(date '+%Y-%m-%dT%H:%M:%S')
+
+# The run in the ledger (lib/ledger.sh): set before the watchdog and follow_log, which write
+# its events. seg counts the steering messages delivered.
+L_PROJECT=$(ledger_project "$dir")
+case $out in
+  */.ship/*/agents) L_TASK=$(basename "$(dirname "$out")") ;;
+  *) L_TASK=$(basename "$out") ;;
+esac
+EV_START=$(wc -l <"$events" | tr -d ' ')
+FINAL_WRITTEN=0 seg=0
+RUN_ID=$(uuidgen | tr 'A-Z' 'a-z')
+ledger_run run-start
 
 # Watchdog: ends the worker after the timeout; stops by itself when the run ends.
 (
@@ -1370,7 +1498,8 @@ if [ -s "$err" ]; then
   mv -f "$err.tmp" "$err"
 fi
 
-# Each segment that finished wrote a result: the last one holds the report; usage is summed.
+# Each segment that finished wrote a result: the last one holds the report; usage is summed,
+# the cost estimate (total_cost_usd, cumulative over the session) is the last one's.
 results=$(grep '"type":"result"' "$log" 2>/dev/null || true)
 final=$(printf '%s\n' "$results" | grep . | tail -n 1 || true)
 status=ok turns=0 tin=0 tout=0 cost=0 tunc=0 tcr=0 tcw=0
@@ -1382,7 +1511,7 @@ if [ -n "$results" ]; then
     [ (map(.num_turns // 0) | add),
       (map((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cache_creation_input_tokens // 0)) | add),
       (map(.usage.output_tokens // 0) | add),
-      (map(.total_cost_usd // 0) | add),
+      (last | .total_cost_usd // 0),
       (map(.usage.input_tokens // 0) | add),
       (map(.usage.cache_read_input_tokens // 0) | add),
       (map(.usage.cache_creation_input_tokens // 0) | add) ] | @tsv')
@@ -1423,6 +1552,8 @@ tsv=$out/runs.tsv
 [ -f "$tsv" ] || printf 'started\tname\tsession\trole\tmodel\tstatus\tturns\tseconds\tin_tokens\tout_tokens\tcost_estimate_usd\tuncached_in\tcache_read\tcache_write\n' >"$tsv"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$started_iso" "$name" "${session:--}" "$role" "$model" \
   "$status" "$turns" "$secs" "$tin" "$tout" "$cost" "$tunc" "$tcr" "$tcw" >>"$tsv"
+ledger_run_end "$status" "$secs" ''
+FINAL_WRITTEN=1
 
 printf '%s %s turns=%s time=%ss result=%s session=%s\n' "$name" "$status" "$turns" "$secs" "$result" "${session:--}"
 case $status in
