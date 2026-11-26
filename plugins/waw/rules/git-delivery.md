@@ -11,9 +11,17 @@ them up: do not change remote URLs, do not switch between SSH and HTTPS, do not 
   [--draft] [--label ...]` pushes it and opens its pull request (GitHub) or merge request
   (GitLab) into the default branch, or prints the open one. It refuses protected branches
   (main, master, develop, release/*, hotfix/*, the default branch, the forge's protected
-  list) and never forces. Do not call `git push`, `gh pr create` or `glab mr create`
-  directly for this: they prompt. A refusal from deliver.sh is final: tell the developer,
-  never look for another way.
+  list). It does not force, with one exception: `deliver.sh push --force-with-lease` moves
+  the current task branch after a rebase, with a lease pinned to the last fetch. Do not call
+  `git push`, `gh pr create` or `glab mr create` directly for this: they prompt. A refusal
+  from deliver.sh is final: tell the developer, never look for another way.
+- The lease rule. Push with the lease alone only for your own task branch: one this task
+  created and only you push to. Get the developer's approval first (`AskUserQuestion`, naming
+  the branch and the pull/merge requests) for a branch someone else works on (commits on
+  `origin/<branch>` not made in this task), or one an open pull/merge request targets
+  (`gh pr list --base <branch>`, `glab mr list --target-branch <branch>`). Under
+  `/auto-pilot` nobody can approve: do not lease-push such a branch; list it under "Left for
+  you". A failed lease push is final: fetch and inspect; never retry with force.
 - `deliver.sh push`, `mr` and `commit` run git with hooks and fsmonitor disabled: they are
   code the project, or a worker that changed it, controls, and they would run on the host
   with the developer's rights.
