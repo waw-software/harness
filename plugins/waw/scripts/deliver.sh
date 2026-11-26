@@ -21,7 +21,8 @@
 #   deliver.sh commit --message-file <file> <path>...
 #       Stage the named paths (git add -- <path>...) and commit them with the message from
 #       <file>, on the current branch only when it is not protected (as push). At least one
-#       path is required; nothing else is staged. Hooks and fsmonitor are off, as for push.
+#       path is required; nothing else is staged; a directory is usage (a symlink to one is
+#       committed as the link). Hooks and fsmonitor are off, as for push.
 #       Prints "deliver: commit <short sha> <subject>". Git failing: 1.
 #   deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>]
 #                 [--label <label>]...
@@ -200,7 +201,8 @@ case $cmd in
       esac
     done
     [ -n "$msgfile" ] && [ -r "$msgfile" ] && [ $# -ge 1 ] || usage
-    for p in "$@"; do [ ! -d "$p" ] || usage; done
+    # A directory is refused (it would stage everything under it); a symlink to one is a file to git.
+    for p in "$@"; do [ ! -d "$p" ] || [ -L "$p" ] || usage; done
     check_branch
     git_nohooks --literal-pathspecs add -- "$@" || die 1 "git add failed"
     git_nohooks --literal-pathspecs commit -F "$msgfile" -- "$@" || die 1 "git commit failed"

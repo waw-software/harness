@@ -37,6 +37,7 @@ case_developer_sandbox() {
   assert_eq "$(jqs "$s" '.sandbox.allowUnsandboxedCommands')" false "no unsandboxed retry"
   assert_eq "$(jqs "$s" '.sandbox.network.strictAllowlist')" true "strict network allowlist"
   assert_eq "$(jqs "$s" '.sandbox.network.allowedDomains | length')" 0 "no network host"
+  assert_eq "$(jqs "$s" ".sandbox.network.allowUnixSockets | join(\" \")")" "/private/tmp/claude-$(id -u)/tsx-$(id -u)" "only the tsx IPC socket dir"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite[0]')" "$cwd" "writes in the worktree"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.ssh") != null')" true "ssh keys unreadable"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.npmrc") != null')" true "npm tokens unreadable"
