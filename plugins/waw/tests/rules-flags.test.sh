@@ -14,7 +14,13 @@ script_flags() { # script_flags <script.sh>: the --flags of its header and its u
 }
 
 named_flags() { # named_flags <md file>: "<script.sh> <--flag> <file>:<line>" per named flag
-  awk -v file="$1" '
+  local f names=''
+  for f in "$SETUP_UNDER_TEST"/*.sh; do
+    f=${f##*/}
+    names=${names:+$names|}${f%.sh}
+  done
+  awk -v file="$1" -v names="$names" '
+    BEGIN { script_re = "^(" names ")[.]sh" }
     function emit(script, text, line) {
       while (match(text, /--[a-z][a-z0-9-]*/)) {
         print script, substr(text, RSTART, RLENGTH), file ":" line
@@ -33,7 +39,7 @@ named_flags() { # named_flags <md file>: "<script.sh> <--flag> <file>:<line>" pe
           span = part[i]
           gsub(/\001/, " ", span)
           sub(/^(! )?/, "", span)
-          if (match(span, /^(agent|attack|task|deliver|stage|smoke)\.sh/)) {
+          if (match(span, script_re)) {
             script = substr(span, 1, RLENGTH)
             for (j = 1; j <= m; j++) emit(script, row[j], line + j - 1)
           }
@@ -48,7 +54,7 @@ named_flags() { # named_flags <md file>: "<script.sh> <--flag> <file>:<line>" pe
       sub(/^[ \t]+/, "", text)
       code = fenced || (/^(    |\t)/ && ticks % 2 == 0)
       if (cont != "" && (code || fenced)) script = cont
-      else if (code && match(text, /^(agent|attack|task|deliver|stage|smoke)\.sh/))
+      else if (code && match(text, script_re))
         script = substr(text, 1, RLENGTH)
       else script = ""
       cont = ""
@@ -94,15 +100,18 @@ Open it with `deliver.sh mr --title t
 
     agent.sh run --role r \
       --bogus-cont
+
+Remove it with `configure.sh uninstall --purgee` later.
 EOF
   out=$(check_flags "$fx/x.md") || fail "check_flags on the fixture: $out"
   assert_contains "$out" "MISSING deliver.sh --no-such-flag at $fx/x.md:1" "span"
   assert_contains "$out" "MISSING deliver.sh --bogus-wrap at $fx/x.md:4" "wrapped span"
   assert_contains "$out" "MISSING agent.sh --bogus-cont at $fx/x.md:7" "continued code line"
+  assert_contains "$out" "MISSING configure.sh --purgee at $fx/x.md:9" "every plugin script"
   case $out in
     *' --title '*|*' --role '*) fail "documented flag reported missing: $out" ;;
   esac
-  assert_contains "$out" "checked 5" "fixture pairs"
+  assert_contains "$out" "checked 6" "fixture pairs"
 }
 
 case_rules_flags_exist() {

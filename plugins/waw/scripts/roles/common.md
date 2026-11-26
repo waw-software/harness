@@ -63,7 +63,7 @@ go on with your recommendation and list it under `concerns`.
 - Create and change files only with the Edit and Write tools. Read with Read, search with Grep
   and Glob. Never use `sed -i`, `perl -i`, heredoc or `echo`/`printf` redirection into a file
   (`cat > f <<EOF`), `python`/`node` one-liners or scripts that edit files, `ln -s`, `for`/`while`
-  loops or `&&` / `;` chains: the guard blocks them, and each block costs a steer. The one
+  loops or `&&` / `;` chains: many projects' command allowlists refuse them, and each refusal costs a steer. The one
   exception: saving a command's output to a file the brief lets you write
   (`cmd > .ship/<slug>/evidence/<file> 2>&1`).
 - **A refused command is a fact, not a puzzle.** Some projects allow only a fixed set of
