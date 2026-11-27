@@ -59,7 +59,7 @@ event_rec 2026-03-10T09:03:00+0000 STALLED b 'no step for 10 minutes' >"$FX/ledg
 
 # retro <args>: the report of March, with runs of spaces squeezed
 retro() { bash "$RETRO" --ledger "$LEDGER" "$@" | tr -s ' '; }
-march() { retro --since 2026-03-01 --until 2026-03-31 "$@"; }
+march() { retro --all --since 2026-03-01 --until 2026-03-31 "$@"; }
 has_line() { # has_line <output> <exact line> <label>
   printf '%s\n' "$1" | grep -qxF -- "$2" || fail "$3: no line [$2] in:
 $1"
@@ -74,7 +74,7 @@ case_period() {
   out=$(march) || fail "retro failed"
   has_line "$out" 'developer | m1 3 1 0 1 1 25 20.0 $3.50 1' "all of March"
   has_line "$out" 'investigator | m2 1 0 0 0 0 3 2.0 $0.25 0' "investigator"
-  out=$(retro --since 2026-03-10 --until 2026-03-31) || fail "retro failed"
+  out=$(retro --all --since 2026-03-10 --until 2026-03-31) || fail "retro failed"
   has_line "$out" 'developer | m1 2 1 0 1 0 15 10.0 $2.50 1' "only the later date"
   no_row "$out" investigator "the earlier date"
 }
@@ -89,7 +89,7 @@ case_events_top() {
   has_line "$out" 'BLOCKED 2' "blocked count"
   has_line "$out" 'QUESTION 1' "question count"
   has_line "$out" 'QUESTION-TIMEOUT 0' "a type without events"
-  has_line "$out" " 2x ${BLOCKED_TEXT:0:60}" "top text, cut at 60"
+  has_line "$out" " 2x ${BLOCKED_TEXT:0:100}" "top text, cut at 100"
   assert_eq "$(printf '%s\n' "$out" | grep -c 'blocked by worker-guard')" "1" "the top text once"
 }
 
@@ -120,7 +120,7 @@ case_spill_read() {
 }
 
 case_no_ledger() {
-  assert_exit 3 bash "$RETRO" --ledger /nonexistent
+  assert_exit 3 bash "$RETRO" --all --ledger /nonexistent
 }
 
 # the last stage of a session ends at its last record, also a run it started; a sub run, a
@@ -153,13 +153,120 @@ case_open_stage_and_marks() {
 case_default_period() {
   local out today
   today=$(date +%Y-%m-%d)
-  out=$(retro) || fail "retro failed"
+  out=$(retro --all) || fail "retro failed"
   no_row "$out" 'developer |' "old records are outside the default period"
-  assert_contains "$out" ".. $today" "default period ends today"
-  out=$(retro --until 2026-03-16) || fail "retro failed"
-  has_line "$out" 'retro: 2026-03-10 .. 2026-03-16' "7 days that end at --until"
+  assert_contains "$out" ".. $today, all projects" "default period ends today"
+  out=$(retro --all --until 2026-03-16) || fail "retro failed"
+  has_line "$out" 'retro: 2026-03-10 .. 2026-03-16, all projects' "7 days that end at --until"
   assert_exit 2 bash "$RETRO" --since yesterday
   assert_exit 2 bash "$RETRO" --task
+}
+
+# two marks of a session, 10:00 and 10:05, and no stage mark that closes the stage
+open_stage_marks() { # open_stage_marks <session>
+  mark_rec stage 2026-03-05T10:00:00+0000 "$1" a ship 1.00
+  mark_rec resume 2026-03-05T10:05:00+0000 "$1" a ship 1.10
+}
+
+# the session went on after its last mark: the cost up to that mark is only a part
+case_open_stage_cost_partial() {
+  local d=$TEST_ROOT/retro-open-partial out
+  mkdir -p "$d"
+  {
+    open_stage_marks V
+    run_rec run 2026-03-05T10:20:00+0000 p1 dev-a developer m1 a \
+      "$(done_rec ok 60 1 0 0 false | jq -c '.commander_session = "V"')"
+  } >"$d/ledger.jsonl"
+  out=$(bash "$RETRO" --all --ledger "$d/ledger.jsonl" --since 2026-03-01 --until 2026-03-31 | tr -s ' ') ||
+    fail "retro failed"
+  has_line "$out" 'ship 1 20m 0s - ~$0.10' "the session went on after its last mark"
+  has_line "$out" 'total: ~$0.10 (commander ~$0.10, workers $0.00)' "commander total marked"
+}
+
+case_open_stage_exact() {
+  local d=$TEST_ROOT/retro-open-exact out
+  mkdir -p "$d"
+  open_stage_marks W >"$d/ledger.jsonl"
+  out=$(bash "$RETRO" --all --ledger "$d/ledger.jsonl" --since 2026-03-01 --until 2026-03-31 | tr -s ' ') ||
+    fail "retro failed"
+  has_line "$out" 'ship 1 5m 0s - $0.10' "nothing after the last mark"
+}
+
+case_smoke_excluded() {
+  local d=$TEST_ROOT/retro-smoke out smoke='{"project":"agentic-smoke.Ab12Cd"}'
+  mkdir -p "$d"
+  {
+    run_rec run 2026-03-05T10:00:00+0000 k1 dev-a developer m1 a "$(done_rec ok 60 1 0 0.50 false)"
+    run_rec run 2026-03-05T10:10:00+0000 k2 smoke developer m1 smoke \
+      "$(done_rec ok 60 1 0 0.09 false | jq -c --argjson s "$smoke" '. + $s')"
+    event_rec 2026-03-05T10:11:00+0000 BLOCKED smoke 'git commit blocked' |
+      jq -c --argjson s "$smoke" '. + $s'
+  } >"$d/ledger.jsonl"
+  out=$(bash "$RETRO" --all --ledger "$d/ledger.jsonl" --since 2026-03-01 --until 2026-03-31 | tr -s ' ') ||
+    fail "retro failed"
+  has_line "$out" 'developer slices: 1, fix runs per slice: 0.0' "the smoke slice is not counted"
+  has_line "$out" 'total: $0.50 (commander $0.00, workers $0.50)' "the smoke cost is not counted"
+  has_line "$out" 'BLOCKED 0' "the smoke event is not counted"
+  has_line "$out" 'smoke runs (not counted): 1' "smoke runs on their own line"
+  out=$(bash "$RETRO" --project proj --ledger "$d/ledger.jsonl" --since 2026-03-01 --until 2026-03-31) ||
+    fail "retro failed"
+  case $out in
+    *'smoke runs'*) fail "a smoke line with a project filter: $out" ;;
+  esac
+}
+
+# the hook prefix goes before the cut, so the reason stays
+case_blocked_prefix_stripped() {
+  local d=$TEST_ROOT/retro-blocked out
+  mkdir -p "$d"
+  event_rec 2026-03-05T10:00:00+0000 BLOCKED a \
+    'Bash git commit --allow-empty -m smoke -> PreToolUse:Bash hook error: [/Users/x/plugins/waw/scripts/hooks/worker-guard.sh]: worker-guard (developer): blocked git commit. Git belongs to the commander: report' \
+    >"$d/ledger.jsonl"
+  out=$(bash "$RETRO" --all --ledger "$d/ledger.jsonl" --since 2026-03-01 --until 2026-03-31 | tr -s ' ') ||
+    fail "retro failed"
+  has_line "$out" ' 1x Bash git commit --allow-empty -m smoke -> worker-guard (developer): blocked git commit. Git belongs' \
+    "prefix removed, cut at 100, no trailing space"
+}
+
+# retro_in <dir> <args>: retro.sh called in that directory, over the two-project ledger
+retro_in() {
+  local dir=$1
+  shift
+  (cd "$dir" && bash "$RETRO" --ledger "$TEST_ROOT/retro-proj/ledger.jsonl" --since 2026-03-01 \
+    --until 2026-03-31 "$@" | tr -s ' ')
+}
+
+case_project_from_dir() {
+  local d=$TEST_ROOT/retro-proj out head='retro: 2026-03-01 .. 2026-03-31'
+  mkdir -p "$d/proj" "$d/plain"
+  : >"$d/proj/AGENTS.md"
+  {
+    run_rec run 2026-03-05T10:00:00+0000 q1 dev-a developer m1 a "$(done_rec ok 60 1 0 0.50 false)"
+    run_rec run 2026-03-05T10:10:00+0000 q2 dev-a developer m2 a \
+      "$(done_rec ok 60 1 0 0.25 false | jq -c '.project = "other"')"
+  } >"$d/ledger.jsonl"
+  out=$(retro_in "$d/proj") || fail "retro failed"
+  has_line "$out" "$head, project proj (from AGENTS.md; all projects: --all)" "header, from the directory"
+  has_line "$out" 'developer | m1 1 0 0 0 0 1 1.0 $0.50 0' "the project's run"
+  no_row "$out" 'developer | m2' "another project's run"
+  out=$(retro_in "$d/proj" --all) || fail "retro failed"
+  has_line "$out" "$head, all projects" "header with --all"
+  has_line "$out" 'developer | m1 1 0 0 0 0 1 1.0 $0.50 0' "--all: proj"
+  has_line "$out" 'developer | m2 1 0 0 0 0 1 1.0 $0.25 0' "--all: other"
+  out=$(retro_in "$d/plain") || fail "retro failed"
+  has_line "$out" "$head, all projects" "header outside a project"
+  has_line "$out" 'developer | m1 1 0 0 0 0 1 1.0 $0.50 0' "outside a project: proj"
+  has_line "$out" 'developer | m2 1 0 0 0 0 1 1.0 $0.25 0' "outside a project: other"
+  out=$(retro_in "$d/proj" --project other) || fail "retro failed"
+  has_line "$out" "$head, project other" "--project wins"
+  has_line "$out" 'developer | m2 1 0 0 0 0 1 1.0 $0.25 0' "--project: its run"
+  no_row "$out" 'developer | m1' "--project: not the directory's run"
+}
+
+case_project_and_all_usage() {
+  bash "$RETRO" --ledger "$LEDGER" --all >/dev/null || fail "--all alone is not usage"
+  assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --project proj --all
+  assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --all --project proj
 }
 
 case_period
@@ -172,4 +279,10 @@ case_spill_read
 case_no_ledger
 case_open_stage_and_marks
 case_default_period
-printf 'retro.test.sh: all ten cases passed\n'
+case_open_stage_cost_partial
+case_open_stage_exact
+case_smoke_excluded
+case_blocked_prefix_stripped
+case_project_from_dir
+case_project_and_all_usage
+printf 'retro.test.sh: all sixteen cases passed\n'

@@ -83,7 +83,7 @@ From each script's header; `<script> --help` is not needed.
     deliver.sh check | push [--force-with-lease] | commit --message-file <file> <path>...
     deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>] [--label <label>]...
     stage.sh <stage>|wait [<reason>]|resume|report [--task <slug>] [--session <id>]
-    retro.sh [--since <date>] [--until <date>] [--project <name>] [--task <slug>] [--ledger <file>]
+    retro.sh [--since <date>] [--until <date>] [--project <name> | --all] [--task <slug>] [--ledger <file>]
     smoke.sh [--keep]
 
 Exits: `agent.sh` 0 report, 2 usage, 3 config, 4 failed, 5 timed out, 6 stopped, 7
