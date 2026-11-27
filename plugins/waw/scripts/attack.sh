@@ -784,7 +784,9 @@ keep_invalid() {
   local f
   # mktemp makes the answer's file 600 and cp keeps that; noclobber creates the .err only
   # when there is none.
-  mkdir -p "$keep_dir" && f=$(mktemp "$keep_dir/attack-$role-$1.XXXXXX") &&
+  # only a directory of our own (not a link): another user cannot swap the files in it
+  mkdir -p -m 700 "$keep_dir" && [ -O "$keep_dir" ] && [ ! -L "$keep_dir" ] &&
+    f=$(mktemp "$keep_dir/attack-$role-$1.XXXXXX") &&
     cp "$tmp/answer" "$f" && (umask 077 && set -C && cat "$tmp/err" >"$f.err") && printf '%s' "$f"
 }
 
