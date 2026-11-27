@@ -398,6 +398,8 @@ worker_settings() {
                  "/private/tmp/pnpm-store-operation-locks-\($uid)"] else [] end)),
           denyRead: $sec},
         network: {strictAllowlist: true, allowLocalBinding: true,
+          # tsx (the test runner of TypeScript packages) binds its IPC socket here.
+          allowUnixSockets: ["/private/tmp/claude-\($uid)/tsx-\($uid)"],
           allowedDomains: ($hosts | split(" ") | map(select(. != "")))}}) end
     ' --args "${secrets[@]}"
 }

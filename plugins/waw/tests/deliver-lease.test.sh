@@ -365,6 +365,18 @@ case_commit_refuses_directory() {
   assert_eq "$(git -C "$C/clone" rev-parse HEAD)" "$before" "no commit"
 }
 
+case_commit_symlink_to_directory() {
+  new_case commit-link feat/c6
+  printf 'message\n' >"$C/msg.txt"
+  mkdir "$C/clone/d"
+  printf 'x\n' >"$C/clone/d/x.txt"
+  ln -s d "$C/clone/link"
+  dsh "$C/clone" commit --message-file "$C/msg.txt" link
+  assert_eq "$rc" 0 "a symlink to a directory is committed"
+  assert_eq "$(git -C "$C/clone" ls-tree HEAD link | awk '{print $1}')" "120000" "committed as a link"
+  assert_eq "$(git -C "$C/clone" ls-tree -r --name-only HEAD | grep -c '^d/')" "0" "the target is not staged"
+}
+
 make_lfs() { # a fake git-lfs: records its argv, answers version
   mkdir -p "$R/lfsbin"
   cat >"$R/lfsbin/git-lfs" <<EOF
@@ -446,5 +458,6 @@ case_commit_only_named_paths
 case_lfs_push_before_push
 case_commit_literal_paths
 case_commit_refuses_directory
+case_commit_symlink_to_directory
 case_lfsconfig_changed_refused
-printf 'deliver-lease.test.sh: all seventeen cases passed\n'
+printf 'deliver-lease.test.sh: all eighteen cases passed\n'
