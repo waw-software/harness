@@ -9,7 +9,9 @@ disable-model-invocation: true
 1. Run `retro.sh` with what the user named: a period (`retro.sh --since YYYY-MM-DD`, with
    `--until` for its last day), a task (`retro.sh --task <slug>`) or a project
    (`retro.sh --project <name>`). Without them it covers the last 7 days: for an older
-   task, give `--since` too.
+   task, give `--since` too. In a project directory (a `CLAUDE.md` or `AGENTS.md` at the
+   repository root or in the current directory) it covers only that project; `--all`
+   covers all projects.
 2. For a task whose review file still exists (`<dir>/review.md`, with `<dir>` its
    `.ship/<slug>` in the current worktree), add one line with its number of findings and how
    many of them are blockers: the table rows whose first cell is `blocker` or `non-blocker`.
