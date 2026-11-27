@@ -10,7 +10,7 @@ budget (`--budget` does not apply, `--timeout` does), and `agent.sh report` show
 `sub`. When a project's permission rules are ones Codex cannot follow, `agent.sh` says so and
 runs that role on its fallback route.
 The scripts of this setup (`agent.sh`, `attack.sh`, `task.sh`, `deliver.sh`, `stage.sh`,
-`smoke.sh`) come from the waw plugin and are on the PATH of your Bash tool: call
+`retro.sh`, `smoke.sh`) come from the waw plugin and are on the PATH of your Bash tool: call
 them by name. The result is still yours:
 a worker's mistake that reaches the developer is your mistake.
 
@@ -64,6 +64,33 @@ the review round.
 Never: run project code on the host: tests, builds, lint, package scripts, the project's git
 hooks. A tester runs them in the sandbox. The plugin's own scripts and `bash tests/run.sh`
 of the waw plugin source are not project code.
+
+## Script calls
+
+From each script's header; `<script> --help` is not needed.
+
+    agent.sh run --role <role> --brief <file> --out <dir> [--cwd <dir>] [--name <id>] \
+      [--resume <session-id>] [--budget <usd>] [--timeout <minutes>] [--allow-install] \
+      [--grant <glob>]... [--quiet]
+    agent.sh answer <name> [<qid>] <text...> | approve <name> [<aid>] [<note...>] | deny <name> [<aid>] <reason...>
+    agent.sh steer <name> <text...> | stop <name> | events <run dir> | questions [<run dir>] | approvals [<run dir>]
+    agent.sh ps | log <name|file.jsonl> [-f] | count | models | report <dir> | sandbox-check
+    attack.sh --role review|security [--task <file>] [--base <ref>] [--repo <dir>] [--max-bytes <n>]
+    attack.sh --role decide --question <file> [--task <file>]
+    attack.sh --check-config
+    task.sh open <slug> [--branch <branch>] [--prompt-file <file>] | prepare <slug> | dir <slug> | clean
+    task.sh deps [<dir>] [--force] [--base <commit>] | limit start <dir> [--minutes N] | limit check <dir>
+    deliver.sh check | push [--force-with-lease] | commit --message-file <file> <path>...
+    deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>] [--label <label>]...
+    stage.sh <stage>|wait [<reason>]|resume|report [--task <slug>] [--session <id>]
+    retro.sh [--since <date>] [--until <date>] [--project <name>] [--task <slug>] [--ledger <file>]
+    smoke.sh [--keep]
+
+Exits: `agent.sh` 0 report, 2 usage, 3 config, 4 failed, 5 timed out, 6 stopped, 7
+slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer, 5 review/security coverage partial
+(answered); `task.sh` 0, 2, 3, 5 limit;
+`deliver.sh` 0, 1 git/forge failed, 2 usage, 3 refused; `stage.sh` 0, 2, 3; `retro.sh` 0,
+2, 3; `smoke.sh` 0, 1 check failed, 3 setup.
 
 ## Running workers
 
@@ -120,6 +147,9 @@ of the waw plugin source are not project code.
   in `agent.sh`; a Codex worker: a Codex permission profile, `codex_run_config`): it writes only in its worktree, the run directory, the temp dir and the tool
   caches; it reads no keys or tokens (`~/.ssh`, the keychain, `~/.npmrc`, the route configs);
   it reaches no network host but localhost (an `--allow-install` worker: its registries).
+  Workers' git reads `lib/worker.gitconfig` (no signing), and watchman runs no daemon in
+  workers (`XDG_STATE_HOME` in the run dir, `WATCHMAN_NO_SPAWN`): Jest and Metro fall back to
+  their node crawler.
   A gateway's key is in the keychain (the item `/configure` named for the route), read by
   the route's `apiKeyHelper`, never in a worker's environment. A new key: the developer
   copies it and runs `! security add-generic-password -U -s <item> -a waw -w "$(pbpaste)"`,
@@ -201,7 +231,8 @@ that worktree. Run git as plain, separate commands from the worktree root, one p
   them as they are;
 - push and open merge/pull requests only with `deliver.sh` (`push`,
   `mr ...`): the developer allowed it without a prompt for task branches; it refuses
-  protected branches and force pushes. Its refusal is final.
+  protected branches and any force but `deliver.sh push --force-with-lease`, under the lease
+  rule in git-delivery.md. Its refusal is final.
 
 When git is refused with "too complex to verify", split the command; never look for a form
 that slips past the check.
@@ -245,6 +276,10 @@ A report is a claim. Before you accept it:
   first found a blocker. What remains goes into the report.
 - **Tester**: `pass` only with evidence for every criterion; open the key screenshots. A
   bug goes to a developer as a brief with the tester's steps, expected and actual.
+  `pass-with-exclusions`: accept it only after you check each exclusion against its error
+  line (the environment, not the change; otherwise it is a fail), and list each under
+  "Not covered" in the report. `blocked` is a stop: fix the cause (a sandbox exception, the
+  brief) and run the tester again; never deliver on it.
 
 ## Shared worktree, parallel developers
 

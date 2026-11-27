@@ -56,7 +56,7 @@ NEXOS_URL=https://api.nexos.ai
 OPENROUTER_URL=https://openrouter.ai/api
 OPENCODE_GO_URL=https://opencode.ai/inference/go
 # The scripts the commander runs without a prompt (bare names: the plugin's bin/ is on the PATH).
-PERMISSIONS='Bash(agent.sh:*) Bash(attack.sh:*) Bash(task.sh:*) Bash(stage.sh:*) Bash(deliver.sh:*) EnterWorktree ExitWorktree'
+PERMISSIONS='Bash(agent.sh:*) Bash(attack.sh:*) Bash(task.sh:*) Bash(stage.sh:*) Bash(deliver.sh:*) Bash(retro.sh:*) EnterWorktree ExitWorktree'
 
 die() {
   printf 'configure.sh: %s\n' "$2" >&2
@@ -345,6 +345,9 @@ apply() {
   done
   n=$(jq '.review.providers // [] | length' "$choices")
   [ "$n" -gt 0 ] || die 2 "review.providers is empty: name at least one provider for code review and decisions"
+  local dup
+  dup=$(jq -r '[.review.providers[].provider] | group_by(.) | map(select(length > 1)[0]) | join(" ")' "$choices")
+  [ -z "$dup" ] || die 2 "review.providers: $dup is named more than once (a second entry would overwrite the first one's model)"
   for i in $(seq 0 $((n - 1))); do
     p=$(jq -r --argjson i "$i" '.review.providers[$i].provider // ""' "$choices")
     m=$(jq -r --argjson i "$i" '.review.providers[$i].model // ""' "$choices")
@@ -614,7 +617,7 @@ check() {
   done
   f=$CONFIG_DIR/settings.json
   s=$(jq -r '.statusLine.command // ""' "$f" 2>/dev/null) || s=""
-  case $s in *waw/plugin/statusline.sh*) pass "status line" ;; '') todo "no status line (it saves the cost /task-cost reports)" "run /configure and choose the status line" ;; *) pass "status line: your own ($s); /task-cost shows no cost per stage" ;; esac
+  case $s in *waw/plugin/statusline.sh*) pass "status line" ;; '') todo "no status line (it saves the model time /task-cost shows; costs come from the transcript)" "run /configure and choose the status line" ;; *) pass "status line: your own ($s); /task-cost shows costs from the transcript, no model time" ;; esac
   if have claude; then
     p=$(PATH="$ROOT/bin:$PATH" command -v agent.sh || true)
     [ -n "$p" ] && pass "scripts on the PATH (plugin bin/)" || bad "agent.sh is not on the PATH"

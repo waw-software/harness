@@ -60,7 +60,12 @@ go on with your recommendation and list it under `concerns`.
   use the tool's own option (`pnpm --filter <pkg> run test`, `pnpm -C <dir> ...`,
   `git -C` is not needed: you already run in the repository). Pipes into a reader (`| head`,
   `| grep`, `| tail`) are fine.
-- Prefer the Read, Grep and Glob tools over `cat`, `grep` and `find`.
+- Create and change files only with the Edit and Write tools. Read with Read, search with Grep
+  and Glob. Never use `sed -i`, `perl -i`, heredoc or `echo`/`printf` redirection into a file
+  (`cat > f <<EOF`), `python`/`node` one-liners or scripts that edit files, `ln -s`, `for`/`while`
+  loops or `&&` / `;` chains: many projects' command allowlists refuse them, and each refusal costs a steer. The one
+  exception: saving a command's output to a file the brief lets you write
+  (`cmd > .ship/<slug>/evidence/<file> 2>&1`).
 - **A refused command is a fact, not a puzzle.** Some projects allow only a fixed set of
   commands, and a hook guards git and installs. When a call is denied or blocked, do not
   retry it in another form (another wrapper, `bash -c`, a script file): finish what you can

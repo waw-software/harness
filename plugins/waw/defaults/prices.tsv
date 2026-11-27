@@ -2,6 +2,16 @@
 # (read 2026-11-21): the row of the host the gateway lists for the model (GET /v1/models),
 # EU/EEA where the list has one. Only models the key can call through /v1/messages.
 # model<TAB>input<TAB>output<TAB>cached input<TAB>cache write (empty: same as input)
+#   <TAB>cache write 1h (optional 6th column; empty or missing: 2 × input)
+# Anthropic models, the rows with six columns: Anthropic API list prices, as given in the
+# plan of the run ledger (2026-11-27), not read from a price page here. Assumption on cache
+# writes: "cache write" is the 5-minute cache (1.25 × input), "cache write 1h" the 1-hour
+# cache (2 × input).
+claude-opus-5-5	4	20	0.2	5	8
+claude-sonnet-5-5	2	10	0.1	2.5	4
+claude-haiku-5-5	0.1	0.5	0.01	0.125	0.2
+claude-fable-5-2	8	40	0.2	10	16
+# nexos.ai rows (the source above):
 GLM 5.3 Flash (trusted)	0.15	0.5	0.029	
 GPT 5.6 Sol (Trusted)	4.4	22	0.44	5.5
 GPT 5.6 Terra (Trusted)	2.2	13.2	0.22	2.75

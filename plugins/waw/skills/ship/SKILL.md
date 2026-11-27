@@ -15,9 +15,13 @@ decide, brief the workers, check what they deliver and deliver it. You do not wr
 read your plan before the work and your report after it, and they merge.
 
 As the first thing in each of the seven steps below, run
-`stage.sh <step>` with the step's name (`workspace`, `understand`,
-`ask`, `plan`, `build`, `verify`, `deliver`), and `stage.sh done`
+`stage.sh <step> --task <slug>` with the step's name (`workspace`, `understand`,
+`ask`, `plan`, `build`, `verify`, `deliver`). In step 1, pick the slug first (1.1) and run
+`stage.sh workspace --task <slug>` right after it. Run `stage.sh done --task <slug>`
 after the report. `/task-cost` shows the time and the cost of each step from these marks.
+Around every wait for the developer (each `AskUserQuestion`, the plan stop), run
+`stage.sh wait <reason> --task <slug>` before it and `stage.sh resume --task <slug>` after
+the answer.
 
 Workers run with `agent.sh run ... --out <dir>/agents`, in the background, at most 5 at a
 time; briefs go to `<dir>/briefs/<name>.md`. Names: `inv-1`, `plan-review-1`, `dev-<slice>`,
@@ -99,7 +103,9 @@ One task is one branch in one worktree, shared by all its workers.
 Ask the developer only what is theirs to decide (the decisions rule, `rules/waw/decisions.md`), in one
 `AskUserQuestion` call: the investigator's open questions that are of that kind, and yours.
 Never ask what the notes or the task already answer. Nothing of that kind is open: ask
-nothing. Decide the rest yourself and keep one line per decision.
+nothing. Decide the rest yourself and keep one line per decision. Run
+`stage.sh wait ask --task <slug>` right before the `AskUserQuestion` call, and
+`stage.sh resume --task <slug>` right after the answer.
 
 ## 4. Plan
 
@@ -127,7 +133,9 @@ more than 400 changed lines of code): split it into pull requests that each ship
 themselves, write them as a checklist into one issue (`gh issue create`), and plan the
 first only. `/ship #N` takes the next unchecked one.
 
-Then stop and wait for "ok" or corrections. This is the only planned stop.
+Then run `stage.sh wait plan --task <slug>`, stop and wait for "ok" or corrections. When
+the developer answers, run `stage.sh resume --task <slug>` first. This is the only planned
+stop.
 
 ## 5. Build
 
@@ -164,7 +172,12 @@ Start the tester and the review at the same time; they only read the code.
    and in a risky zone also `--role security` (to `<dir>/security.md`). A risky zone:
    authentication or authorization, secrets, money, input from outside the system, deleting
    or migrating data, or a path the project lists as risky. Exit 3 or 4: no reviewer
-   answered; say so in the report.
+   answered; say so in the report. Exit 5: the reviewer saw only part of its input (the
+   coverage line names what was left out: diff files, the task or a rules file). Triage what
+   it found, run it once more with `--max-bytes` raised to cover what the coverage line names,
+   or with codex first, and if it stays partial write
+   "review: partial (<provider>)" in the report. The output starts with
+   trying/waiting/skipped lines; the answer follows the line that starts with `provider: `.
 3. **Triage.** Check every reviewer finding and every tester bug against the code yourself.
    Real: a small exact fix yourself, or a fix brief to the developer of that slice (resume
    it) with the finding, where, and the fix; commit after checking. Fix only real bugs; a
@@ -176,7 +189,10 @@ Start the tester and the review at the same time; they only read the code.
    or by the tester on the running product (size S: the tester's command,
    its output in `<dir>/evidence/`), with evidence you opened. Never count a
    criterion as proven by code reading or unit tests alone; what could not be run goes
-   under "Not covered".
+   under "Not covered". A tester's `pass-with-exclusions` proves only what it proved; each
+   exclusion goes under "Not covered". `blocked` is not a result: fix the cause and run the
+   tester again; still blocked after that is a stop ("Stops"): no push and no pull request
+   until a tester run is not `blocked`, under `/auto-pilot` too.
 5. **Documents**: statements in the project's documents that this change made false are
    fixed by a developer brief, once, now. A decision that changes what the product does or
    how it is built goes where the project keeps decisions, as accepted: the developer's
@@ -187,8 +203,10 @@ Start the tester and the review at the same time; they only read the code.
 You deliver, without asking: write the report to `<dir>/mr.md`, then
 `deliver.sh mr --title "<title>" --description-file <dir>/mr.md`
 pushes the branch and opens the pull/merge request (GitLab or GitHub) with the report as
-its body; later pushes: `deliver.sh push`. It refuses protected branches and never forces:
-a refusal goes to the developer as it is. Its title follows the commits, not the branch name: the type the commits have
+its body; later pushes: `deliver.sh push`. It refuses protected branches, and the one force
+form (`deliver.sh push --force-with-lease` after a rebase) follows the lease rule in
+git-delivery.md. A refusal goes to the developer as it is.
+Its title follows the commits, not the branch name: the type the commits have
 (`fix` when they fix, whatever the type in the branch name says), with the ticket as the scope
 when the branch names one, for example `fix(PROJ-456): ...`; a project rule for titles
 wins. Then watch it, without asking whether to: watching is part of delivering. Watch until
@@ -212,7 +230,9 @@ When all jobs are done, read two things:
 The report, in the pull request and in the chat:
 
 1. **Try it**: how to see it work in a minute.
-2. **Proof**: per acceptance criterion, how it was proven (the e2e specs run, or what the
+2. **Proof**: first one line, `tests: pass | pass-with-exclusions (<check>: <short summary>; ...) | fail | blocked`;
+   the raw error lines stay in `<dir>/evidence/`, never in the pull request.
+   Then per acceptance criterion, how it was proven (the e2e specs run, or what the
    tester ran and with which tool) and what it showed, with the key screenshots.
 3. **E2E proposal**: from the tester, when there is one: the specs to add or extend and the
    criteria they would cover.

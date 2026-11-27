@@ -80,7 +80,8 @@ case_module_off_and_idempotent() {
   CLAUDE_PLUGIN_ROOT=$SETUP_UNDER_TEST/.. bash "$SETUP_UNDER_TEST/../hooks/session-start.sh" >"$ROOT/hook.json"
   cmp -s "$CFG/rules/waw/commander.md" "$SETUP_UNDER_TEST/../rules/commander.md" || fail "hook refreshed the rule"
   assert_contains "$(jq -r .hookSpecificOutput.additionalContext "$ROOT/hook.json")" "commander.md" "hook says it refreshed"
-  assert_eq "$(jq -r '.permissions.allow | length' "$CFG/settings.json")" "8" "7 script rules + Read, no duplicates"
+  assert_eq "$(jq -r '.permissions.allow | length' "$CFG/settings.json")" "9" "8 script rules + Read, no duplicates"
+  assert_eq "$(jq -r '.permissions.allow | map(select(. == "Bash(retro.sh:*)")) | length' "$CFG/settings.json")" "1" "retro.sh allowed once"
 }
 
 case_bad_choices_write_nothing() {
@@ -94,6 +95,9 @@ case_bad_choices_write_nothing() {
   assert_exit 2 bash "$CONF" apply "$ROOT/bad3.json"
   jq '.review.providers = []' "$ROOT/c2.json" >"$ROOT/bad4.json"
   assert_exit 2 bash "$CONF" apply "$ROOT/bad4.json"
+  jq '.review.providers += [.review.providers[0]]' "$ROOT/c2.json" >"$ROOT/bad5.json"
+  assert_exit 2 bash "$CONF" apply "$ROOT/bad5.json"
+  assert_contains "$(bash "$CONF" apply "$ROOT/bad5.json" 2>&1 || true)" "named more than once" "duplicate provider refused"
   assert_eq "$(cat "$H/config")" "$before" "config unchanged after refused choices"
 }
 
@@ -163,6 +167,7 @@ case_uninstall() (
   printf '{}\n' >"$UH/workers/codex/auth.json"
   out=$(bash "$CONF" uninstall --keep-plugin) || fail "uninstall failed: $out"
   assert_eq "$(jq -S -c . "$C/settings.json")" "$(printf '%s' "$orig" | jq -S -c .)" "settings back to what they were"
+  assert_eq "$(jq -r '.permissions.allow | map(select(. == "Bash(retro.sh:*)")) | length' "$C/settings.json")" "0" "retro.sh permission removed"
   [ ! -e "$C/rules/waw" ] || fail "rules left: $(ls "$C/rules/waw")"
   [ -f "$UH/config" ] || fail "home removed without --purge"
   [ ! -e "$UH/plugin" ] || fail "plugin link left"
