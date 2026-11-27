@@ -62,5 +62,26 @@ case_events_not_duplicated() {
     "the task is the basename of --out"
 }
 
+case_interrupt_keeps_pending_event() {
+  local out=$ROOT/pending-out pid n=0 t
+  FAKE_CLAUDE_USAGE_MODE=events-hang bash "$AGENT" run --role investigator \
+    --brief "$ROOT/brief.md" --out "$out" --cwd "$ROOT/dir" --name inv-q --quiet \
+    >"$ROOT/inv-q.log" 2>"$ROOT/inv-q.err" &
+  pid=$!
+  # TERM as soon as the worker has written its events, before the follower's next look
+  while ! grep -q ' APPROVAL inv-q: ' "$out/events.log" 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -le 300 ] || fail "inv-q wrote no events: $(cat "$ROOT/inv-q.err" 2>&1)"
+    sleep 0.05
+  done
+  kill -TERM "$pid"
+  assert_exit 130 wait "$pid"
+  # no wait here: the records are there when the wrapper has exited
+  for t in QUESTION APPROVAL; do
+    assert_eq "$(count ".kind == \"event\" and .name == \"inv-q\" and .type == \"$t\"")" 1 "$t records"
+  done
+}
+
 case_events_survive_interruption
 case_events_not_duplicated
+case_interrupt_keeps_pending_event

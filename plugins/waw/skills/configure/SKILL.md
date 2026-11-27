@@ -146,9 +146,10 @@ starts. That is why the key goes to the keychain.
   (`mcp__*atlassian*`). Otherwise off.
 - **Decisions rule** (`rules/decisions.md`: ask only what is the developer's to decide, in a
   wizard): on by default. Recommend off when the developer's own rules already have one.
-- **Status line**: none yet: install ours (it also saves the cost that `/task-cost`
-  reports). Another one is set (detect says "another one", for example an Orca hook): recommend
-  keeping it, and say that `/task-cost` then shows no cost per stage.
+- **Status line**: none yet: install ours (it saves the model time that `/task-cost`
+  shows; the cost per stage comes from the session transcript either way). Another one is set
+  (detect says "another one", for example an Orca hook): recommend keeping it, and say that
+  `/task-cost` then shows the cost per stage but no model time.
 - **Commander settings** (multiSelect): the permissions for the setup's scripts
   (Recommended), no Claude attribution in commits and pull requests (as in the original
   setup), Opus 5.5 with effort high as this config's model.

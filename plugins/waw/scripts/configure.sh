@@ -617,7 +617,7 @@ check() {
   done
   f=$CONFIG_DIR/settings.json
   s=$(jq -r '.statusLine.command // ""' "$f" 2>/dev/null) || s=""
-  case $s in *waw/plugin/statusline.sh*) pass "status line" ;; '') todo "no status line (it saves the cost /task-cost reports)" "run /configure and choose the status line" ;; *) pass "status line: your own ($s); /task-cost shows no cost per stage" ;; esac
+  case $s in *waw/plugin/statusline.sh*) pass "status line" ;; '') todo "no status line (it saves the model time /task-cost shows; costs come from the transcript)" "run /configure and choose the status line" ;; *) pass "status line: your own ($s); /task-cost shows costs from the transcript, no model time" ;; esac
   if have claude; then
     p=$(PATH="$ROOT/bin:$PATH" command -v agent.sh || true)
     [ -n "$p" ] && pass "scripts on the PATH (plugin bin/)" || bad "agent.sh is not on the PATH"

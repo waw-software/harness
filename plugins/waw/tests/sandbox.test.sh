@@ -124,6 +124,12 @@ case_budget_in_real_dollars() {
   assert_exit 0 run_worker sb-noprice developer "$ROOT/noprice"
   budget=$(awk '/^=== sb-noprice$/{f=1; next} /^=== /{f=0} f && $1 == "--max-budget-usd" {getline; print; exit}' "$ARGS")
   assert_eq "$budget" "5" "no price: the budget as it is"
+  # a native Claude model has a price in the plugin's defaults, for the ledger only
+  { grep -v '^AGENT_DEVELOPER_MODEL=' "$WAW_CONFIG"
+    printf 'AGENT_DEVELOPER_MODEL="claude-haiku-5-5"\n'; } >"$ROOT/config-haiku"
+  WAW_CONFIG=$ROOT/config-haiku assert_exit 0 run_worker sb-native developer "$ROOT/native" --budget 5
+  budget=$(awk '/^=== sb-native$/{f=1; next} /^=== /{f=0} f && $1 == "--max-budget-usd" {getline; print; exit}' "$ARGS")
+  assert_eq "$budget" "5" "a Claude model: the budget as it is"
 }
 
 case_space_path_denied() {

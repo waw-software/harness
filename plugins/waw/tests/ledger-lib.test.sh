@@ -59,6 +59,48 @@ case_stale_lock() {
   [ ! -e "$LOCK" ] || fail "the lock dir is still there"
 }
 
+case_stale_lock_two_writers() {
+  reset_state
+  mkdir "$LOCK"
+  local old w i
+  old=$(date -v-20S +%Y%m%d%H%M.%S 2>/dev/null) || old=$(date -d '20 seconds ago' +%Y%m%d%H%M.%S)
+  touch -t "$old" "$LOCK"
+  for w in 1 2; do
+    for i in $(seq 1 50); do
+      ledger_append "{\"v\":1,\"kind\":\"test\",\"t\":\"$NOW\",\"id\":\"$w-$i\"}"
+    done &
+  done
+  wait
+  set -- "$LEDGER"
+  for i in "$AGENT_STATE_DIR"/ledger.d/*; do [ ! -f "$i" ] || set -- "$@" "$i"; done
+  assert_eq "$(cat "$@" | wc -l | tr -d ' ')" 100 "lines in the ledger and the spill files"
+  assert_eq "$(cat "$@" | jq -s 'map(.id) | unique | length')" 100 "distinct valid records"
+  assert_eq "$(ls -d "$AGENT_STATE_DIR"/ledger.lock* 2>/dev/null)" "" "no lock dir left"
+}
+
+# The race, forced: this writer sees the stale lock, and before it acts another writer
+# removes that lock and takes a fresh one.
+case_stale_seen_then_retaken() {
+  reset_state
+  mkdir "$LOCK"
+  (
+    eval "real_$(declare -f _ledger_stale)"
+    _ledger_stale() {
+      if [ ! -e "$TEST_ROOT/retaken" ]; then
+        : >"$TEST_ROOT/retaken" # the other writer's lock is there now, with a new mtime
+        rmdir "$LOCK" && mkdir "$LOCK"
+        return 0
+      fi
+      real__ledger_stale "$@"
+    }
+    LEDGER_LOCK_TRIES=3 ledger_append "{\"v\":1,\"kind\":\"test\",\"t\":\"$NOW\"}" 2>/dev/null
+  )
+  [ -e "$TEST_ROOT/retaken" ] || fail "the staleness check was never reached"
+  [ -d "$LOCK" ] || fail "the other writer's fresh lock was removed"
+  assert_eq "$(lines_of "$LEDGER")" 0 "wrote while another writer held the lock"
+  assert_eq "$(cat "$AGENT_STATE_DIR"/ledger.d/* | jq -r .kind)" test "the record was spilled"
+}
+
 case_held_lock_spills() {
   reset_state
   mkdir "$LOCK"
@@ -114,8 +156,10 @@ case_project() {
 case_append_shape
 case_concurrent_writers
 case_stale_lock
+case_stale_lock_two_writers
+case_stale_seen_then_retaken
 case_held_lock_spills
 case_home_chain
 case_price_any
 case_project
-printf 'ledger-lib.test.sh: all seven cases passed\n'
+printf 'ledger-lib.test.sh: all nine cases passed\n'

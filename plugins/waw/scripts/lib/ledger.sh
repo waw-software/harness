@@ -22,9 +22,14 @@
 #
 # Lock: mkdir <ledger_dir>/ledger.lock.d. mkdir is atomic on POSIX, works with bash 3.2 and
 # gives one code path everywhere; lockf and shlock are macOS-only, and flock is absent there.
-# A lock dir older than 10 s belongs to a dead writer and is removed. A writer that does not
-# get the lock in LEDGER_LOCK_TRIES tries (default 100, 0.05 s apart; tests lower it)
-# writes its record to a file of its own under ledger.d/.
+# A lock dir older than 10 s belongs to a dead writer and is removed, only under a second
+# mkdir lock, ledger.lock.d.reap. Removing it directly, or renaming it away first, is not
+# safe: between a writer's age check and its rmdir or mv another writer may have removed the
+# stale lock and taken a fresh one under the same name. The reap lock is never removed by
+# age (that would be the same race): if a writer dies holding it while a dead writer's lock
+# is there, records go to ledger.d/ until both dirs are removed by hand; none is lost.
+# A writer that does not get the lock in LEDGER_LOCK_TRIES tries (default 100, 0.05 s apart;
+# tests lower it) writes its record to a file of its own under ledger.d/.
 
 _LEDGER_LIB_DIR=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
@@ -81,6 +86,17 @@ _ledger_stale() {
   [ $(($(date +%s) - m)) -gt 10 ]
 }
 
+# _ledger_reap <lock dir>: removes it if it is still stale; true when it did. Only the holder
+# of <lock dir>.reap removes another writer's lock, and it checks the age again while holding
+# it: an earlier check may be about a lock that was since removed and taken afresh.
+_ledger_reap() {
+  local rc=1
+  mkdir "$1.reap" 2>/dev/null || return 1
+  if _ledger_stale "$1" && rmdir "$1" 2>/dev/null; then rc=0; fi
+  rmdir "$1.reap" 2>/dev/null || true
+  return "$rc"
+}
+
 # ledger_append <json record>: appends it as one line. Always returns 0: the ledger never
 # fails its caller; what goes wrong is a warning on stderr.
 ledger_append() {
@@ -110,7 +126,7 @@ ledger_append() {
     fi
     n=$((n + 1))
     # a removed stale lock is retried at once
-    if _ledger_stale "$lock" && rmdir "$lock" 2>/dev/null; then continue; fi
+    if _ledger_stale "$lock" && _ledger_reap "$lock"; then continue; fi
     sleep 0.05
   done
   if mkdir -p "$dir/ledger.d" 2>/dev/null && spill=$(mktemp "$dir/ledger.d/XXXXXX" 2>/dev/null) &&

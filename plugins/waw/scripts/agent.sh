@@ -1090,9 +1090,13 @@ if [ "$runner" = codex ] && [ -d "$dir" ]; then
     printf 'agent.sh: %s; this %s runs on route %s (%s) instead\n' "$why" "$role" "$route" "$model" >&2
   fi
 fi
-# The budget is in real dollars; Claude Code counts in Opus dollars (see PRICES). Without a
-# price for the model the budget is passed as it is.
-factor=$(cc_factor "$model")
+# The budget is in real dollars; for a gateway model Claude Code counts in Opus dollars (see
+# PRICES). It prices its own models (claude-* and its aliases) itself: their budget, and that
+# of a model without a price, is passed as it is.
+case $model in
+  claude-* | sonnet | opus | haiku | fable) factor='' ;;
+  *) factor=$(cc_factor "$model") ;;
+esac
 if [ -n "$factor" ]; then cc_budget=$(awk -v b="$budget" -v f="$factor" 'BEGIN { printf "%.2f", b * f }')
 else cc_budget=$budget; fi
 WORKER_DIR=$(route_dir "$route")
@@ -1230,7 +1234,7 @@ mkdir -p "$REGISTRY"
 entry=$REGISTRY/$$.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$$" "$queued_started" "$name" "$role" "$model" "$dir" "$log" "$out" >"$entry"
 : >"$runfile"
-lease='' lease_held=0 acq_pid='' seg_pid='' stage=''
+lease='' lease_held=0 acq_pid='' seg_pid='' stage='' fp=''
 # The report is built in a file of the state root, which no worker can write, and renamed onto
 # $result: $out is the worker's to write, and a link it plants there must not be followed.
 new_stage() { stage=$(mktemp "$state_root/r.XXXXXX") || die 3 "could not stage the report in $state_root"; }
@@ -1260,6 +1264,13 @@ on_signal() { # INT/TERM: stop the acquisition/worker child, wait for it, then r
   kill_worker "$runfile"
   if [ -n "$seg_pid" ]; then
     while kill -0 "$seg_pid" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  fi
+  if [ -n "$fp" ]; then
+    # as at a normal end: without the runfile the follower makes its last scan, which takes the
+    # events not yet in the ledger, and ends; at most 3 s
+    rm -f "$runfile"
+    n=0
+    while kill -0 "$fp" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
   fi
   if [ -n "$RUN_ID" ] && [ "$FINAL_WRITTEN" != 1 ]; then
     ledger_run_end interrupted "$(($(date +%s) - started))" true
