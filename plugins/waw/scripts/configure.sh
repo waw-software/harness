@@ -56,7 +56,7 @@ NEXOS_URL=https://api.nexos.ai
 OPENROUTER_URL=https://openrouter.ai/api
 OPENCODE_GO_URL=https://opencode.ai/inference/go
 # The scripts the commander runs without a prompt (bare names: the plugin's bin/ is on the PATH).
-PERMISSIONS='Bash(agent.sh:*) Bash(attack.sh:*) Bash(task.sh:*) Bash(stage.sh:*) Bash(deliver.sh:*) EnterWorktree ExitWorktree'
+PERMISSIONS='Bash(agent.sh:*) Bash(attack.sh:*) Bash(task.sh:*) Bash(stage.sh:*) Bash(deliver.sh:*) Bash(retro.sh:*) EnterWorktree ExitWorktree'
 
 die() {
   printf 'configure.sh: %s\n' "$2" >&2
