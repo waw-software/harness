@@ -38,6 +38,7 @@ case_developer_sandbox() {
   assert_eq "$(jqs "$s" '.sandbox.network.strictAllowlist')" true "strict network allowlist"
   assert_eq "$(jqs "$s" '.sandbox.network.allowedDomains | length')" 0 "no network host"
   assert_eq "$(jqs "$s" ".sandbox.network.allowUnixSockets | join(\" \")")" "/private/tmp/claude-$(id -u)/tsx-$(id -u)" "only the tsx IPC socket dir"
+  assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite | map(select(contains(".local/state/watchman"))) | length')" 0 "the watchman state of the developer is not writable"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.allowWrite[0]')" "$cwd" "writes in the worktree"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.ssh") != null')" true "ssh keys unreadable"
   assert_eq "$(jqs "$s" '.sandbox.filesystem.denyRead | index("~/.npmrc") != null')" true "npm tokens unreadable"
@@ -204,7 +205,132 @@ case_proxy_credentials() {
   grep -q '^HTTPS_PROXY=http://u:p@proxy:3128$' "$f" || fail "a proxy named in AGENT_WORKER_ENV was not passed"
 }
 
+case_worker_git_and_state_env() {
+  local f=$TEST_ROOT/claude-env-sb-gitenv.log cfg=$SETUP_UNDER_TEST/lib/worker.gitconfig repo=$ROOT/signrepo state rel home
+  # the state dir is gone after the run: while it runs, record the claude link and write
+  # through it, as Claude Code does with its version locks
+  cat >"$TEST_ROOT/bin/claude" <<EOF
+#!/bin/sh
+readlink "\$XDG_STATE_HOME/claude" >"$TEST_ROOT/claude-state-link.log"
+[ ! -d "\$XDG_STATE_HOME/watchman" ] || : >"$TEST_ROOT/claude-state-watchman.log"
+! kill -0 "\$(cat "\$XDG_STATE_HOME/.owner")" || : >"$TEST_ROOT/claude-state-owner.log"
+: >"\$XDG_STATE_HOME/claude/test.lock"
+exec bash "$TESTS_DIR/fixtures/fake-claude.sh" "\$@"
+EOF
+  XDG_STATE_HOME=$TEST_ROOT/elsewhere GIT_CONFIG_GLOBAL=$TEST_ROOT/elsewhere.gitconfig WATCHMAN_NO_SPAWN=0 \
+    AGENT_WORKER_ENV="$AGENT_WORKER_ENV GIT_CONFIG_GLOBAL XDG_STATE_HOME WATCHMAN_NO_SPAWN" \
+    assert_exit 0 run_worker sb-gitenv developer "$ROOT/gitenv"
+  cp "$TESTS_DIR/fixtures/fake-claude.sh" "$TEST_ROOT/bin/claude"
+  assert_eq "$(cat "$TEST_ROOT/claude-state-link.log")" "$TEST_ROOT/elsewhere/claude" "claude in the state dir links to the commander's Claude state"
+  [ -f "$TEST_ROOT/elsewhere/claude/test.lock" ] || fail "removing the state dir removed what is behind the claude link"
+  [ -s "$f" ] || fail "the fake claude recorded no environment"
+  state=$(sed -n 's/^XDG_STATE_HOME=//p' "$f")
+  grep -qxF "GIT_CONFIG_GLOBAL=$cfg" "$f" || fail "the worker's global git config is not the plugin's"
+  [[ $state =~ ^"$HOME"/\.local/state/waw/s\.[A-Za-z0-9]{6}$ ]] || fail "the worker has no short XDG_STATE_HOME of its own: [$state]"
+  [ -f "$TEST_ROOT/claude-state-watchman.log" ] || fail "the state dir had no watchman/ during the run"
+  [ -f "$TEST_ROOT/claude-state-owner.log" ] || fail "the state dir named no live owner during the run"
+  assert_eq "$(jqs "$(settings_of sb-gitenv)" "[.sandbox.filesystem.allowWrite[]
+      | select(startswith(\"$HOME/.local\") or startswith(\"~/.local\"))] | join(\" \")")" \
+    "$state/watchman" "under ~/.local only the run's own watchman dir is writable"
+  # watchman's socket, <state>/watchman/<user>-state/sock (22 bytes more than the user, with the
+  # NUL), under a real home: the test's HOME sits deep in TMPDIR
+  rel=${state#"$HOME"} home=/Users/$USER
+  [ $((${#home} + ${#rel} + ${#USER} + 22)) -lt 104 ] || fail "watchman's socket path would be too long: $home$rel"
+  grep -qxF "WATCHMAN_NO_SPAWN=1" "$f" || fail "WATCHMAN_NO_SPAWN missing"
+  ! grep -qF "$TEST_ROOT/elsewhere" "$f" || fail "a commander's path reached the worker"
+  ! grep -qxF "WATCHMAN_NO_SPAWN=0" "$f" || fail "the commander's WATCHMAN_NO_SPAWN reached the worker"
+  [ ! -e "$state" ] || fail "the worker's state dir was left behind"
+  [ ! -e "$HOME/.cache/waw/xdg-state" ] || fail "a state dir shared by all workers was created"
+  assert_eq "$(git config --file "$cfg" --list | cut -d= -f1 | sort | tr '\n' ' ')" \
+    "commit.gpgsign tag.gpgsign user.email user.name " "keys of the worker's git config"
+  printf '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n' >"$ROOT/signing.gitconfig"
+  git init -q "$repo" || fail "git init failed"
+  ! GIT_CONFIG_GLOBAL=$ROOT/signing.gitconfig git -C "$repo" commit -q --allow-empty -m x 2>/dev/null ||
+    fail "a commit that has to sign succeeded"
+  GIT_CONFIG_GLOBAL=$cfg assert_exit 0 git -C "$repo" commit -q --allow-empty -m x
+}
+
+case_state_sweep() {
+  local root=$HOME/.local/state/waw kept=$ROOT/swept-target
+  mkdir -p "$root/s.old000" "$root/s.new000" "$kept"
+  : >"$kept/file"
+  ln -s "$kept" "$root/s.old000/claude"
+  touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$root/s.old000"
+  assert_exit 0 run_worker sb-sweep developer "$ROOT/sweep"
+  [ ! -e "$root/s.old000" ] || fail "a state dir two days old was not swept"
+  [ -d "$root/s.new000" ] || fail "a fresh state dir was swept"
+  [ -f "$kept/file" ] || fail "the sweep followed the claude link"
+
+  local old live dead
+  old=$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)
+  sleep 30 &
+  live=$!
+  sh -c 'exit 0' &
+  dead=$!
+  wait "$dead"
+  mkdir -p "$root/s.live00" "$root/s.dead00"
+  printf '%s\n' "$live" >"$root/s.live00/.owner"
+  printf '%s\n' "$dead" >"$root/s.dead00/.owner"
+  : >"$root/r.old000"
+  : >"$root/r.new000"
+  touch -t "$old" "$root/s.live00" "$root/s.dead00" "$root/r.old000"
+  assert_exit 0 run_worker sb-sweep2 developer "$ROOT/sweep2"
+  kill "$live"
+  wait "$live" 2>/dev/null || true
+  [ -d "$root/s.live00" ] || fail "an old state dir whose owner is alive was swept"
+  [ ! -e "$root/s.dead00" ] || fail "an old state dir whose owner is gone was not swept"
+  [ ! -e "$root/r.old000" ] || fail "a staged report two days old was not swept"
+  [ -f "$root/r.new000" ] || fail "a fresh staged report was swept"
+  rm -rf "$root/s.live00" "$root/r.new000"
+}
+
+case_result_not_written_through_symlink() {
+  local cwd=$ROOT/link victim=$TEST_ROOT/victim vdir=$TEST_ROOT/victim-dir out
+  out=$cwd/.ship/t/agents
+  mkdir -p "$out" "$vdir"
+  printf 'keep me\n' >"$victim"
+  ln -s "$victim" "$out/sb-link.result.json"
+  assert_exit 0 run_worker sb-link developer "$cwd"
+  assert_eq "$(cat "$victim")" "keep me" "the target of a planted result link"
+  [ -f "$out/sb-link.result.json" ] && [ ! -L "$out/sb-link.result.json" ] || fail "the result is not a regular file"
+  jq -e 'type == "object" and (has("error") | not)' "$out/sb-link.result.json" >/dev/null || fail "the result is not the report"
+  [ -z "$(find "$out" -name '*.result.json.tmp')" ] || fail "a result.json.tmp was left"
+  ln -s "$vdir" "$out/sb-linkdir.result.json"
+  assert_exit 0 run_worker sb-linkdir developer "$cwd"
+  [ -z "$(ls -A "$vdir")" ] || fail "the report was moved into the directory behind a planted link"
+  [ -f "$out/sb-linkdir.result.json" ] && [ ! -L "$out/sb-linkdir.result.json" ] || fail "the result is not a regular file"
+}
+
+overlap_run() { # overlap_run <name> <cwd> <out>: a launch whose stderr goes to sb-overlap.err
+  bash "$AGENT" run --role developer --brief "$ROOT/brief.md" --cwd "$2" --out "$3" \
+    --name "$1" --quiet 2>"$ROOT/sb-overlap.err"
+}
+
+case_state_root_overlap_refused() {
+  local state=$HOME/.local/state n=0 flag path
+  mkdir -p "$state/waw/s.other0" "$ROOT/overlap"
+  ln -s "$state/waw" "$ROOT/overlap/alias"
+  printf 'sandbox test brief\n' >"$ROOT/brief.md"
+  # --cwd/--out that contain the state root, are it, or are inside it
+  for path in "cwd $HOME" "out $HOME/.local" "out $state" "out $state/waw" "out $state/waw/s.other0" \
+    "cwd $state/waw" "out $ROOT/overlap/alias"; do
+    flag=${path%% *} path=${path#* } n=$((n + 1))
+    if [ "$flag" = cwd ]; then
+      assert_exit 2 overlap_run "sb-overlap$n" "$path" "$ROOT/overlap/out"
+    else
+      assert_exit 2 overlap_run "sb-overlap$n" "$ROOT/overlap" "$path"
+    fi
+    assert_contains "$(cat "$ROOT/sb-overlap.err")" "--$flag " "$flag $path: the flag is named"
+    assert_contains "$(cat "$ROOT/sb-overlap.err")" "state root ~/.local/state: refused" "$flag $path: the reason"
+  done
+  rm -rf "$state/waw/s.other0"
+}
+
 case_developer_sandbox
+case_worker_git_and_state_env
+case_state_sweep
+case_result_not_written_through_symlink
+case_state_root_overlap_refused
 case_budget_in_real_dollars
 case_tester_and_install
 case_sandbox_off_and_check
@@ -215,4 +341,4 @@ case_new_default_denies
 case_read_deny_file
 case_parent_env_allowlist
 case_proxy_credentials
-printf 'sandbox.test.sh: all eleven cases passed\n'
+printf 'sandbox.test.sh: all fifteen cases passed\n'

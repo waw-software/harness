@@ -32,6 +32,8 @@ differences:
   investigator's model that built the plan) and take each answer as the
   developer's. Exit 3 or 4: take your own recommendations. Do not wait for "ok".
 - **Stops**: in place of each stop, one more decision by the same call. A step that could do
-  harm is never taken: do the rest and list it under `Left for you`.
+  harm is never taken: do the rest and list it under `Left for you`. A tester still `blocked`
+  after the second run is not a decision: no push and no pull request; list it under
+  `Left for you`.
 - **Report**: it starts with `Decided without you`: every question, the decision, who took it
   (the provider and model named on the first line of the answer, or you).

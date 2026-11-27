@@ -107,9 +107,20 @@
 # put every Bash command of the worker in Claude Code's OS sandbox (worker_settings): the
 # hooks match command text and stop accidents; the sandbox is the isolation, which is also why
 # bypassPermissions is safe where a project allows it. A tester does not start while a
-# developer works in the same --cwd: it tests a settled tree.
+# developer works in the same --cwd: it tests a settled tree. Every worker's env sets
+# GIT_CONFIG_GLOBAL (lib/worker.gitconfig), a private XDG_STATE_HOME,
+# ~/.local/state/waw/s.XXXXXX per run (short: watchman's socket path must stay under 104
+# bytes; the root is outside every write list, only the run's watchman/ in it is writable),
+# and WATCHMAN_NO_SPAWN=1, in place of the commander's own values. A run exits 2 when --cwd or
+# --out contains ~/.local/state, is it or is inside it. The state dir names its run's pid in
+# .owner; a later run removes it after a day only when that process is gone. The report is
+# staged as ~/.local/state/waw/r.XXXXXX and renamed onto <name>.result.json, so a link planted
+# there is replaced, not followed (staged files left a day are removed too).
 # Exit: 0 report written, 2 usage, 3 config, 4 the worker failed or gave no valid report,
 # 5 timed out, 6 stopped, 7 slot-wait timeout. Portable to macOS /bin/bash 3.2.
+# A tester's pass-with-exclusions report that does not give every check that did not pass its
+# own exclusion, of the same name and command, is invalid (exit 4; the result keeps the report
+# and gets an error).
 set -euo pipefail
 unset CDPATH
 
@@ -319,6 +330,9 @@ for _d in "${CLAUDE_CONFIG_DIR:-/nonexistent}"/ "$AS_HOME"/workers/*/ "${CFG_NEX
 done
 unset _d _f
 
+# A worker's git (GIT_CONFIG_GLOBAL in its env).
+WORKER_GITCONFIG="$HERE/lib/worker.gitconfig"
+
 # read_deny_extra <worktree> <run dir>: the paths of $WAW_HOME/read-deny, one per line (an
 # absolute path or ~/..., spaces kept; blank lines and # lines skipped). A path that is the
 # worktree, the run directory or a parent of either is skipped with a warning: the worker
@@ -358,7 +372,8 @@ registry_hosts() {
   grep -hoE 'https?://[^/:" ]+' "$1/.npmrc" "$HOME/.npmrc" 2>/dev/null | sed 's#^.*//##' | sort -u
 }
 
-# worker_settings <role> <dir> <run dir> <allow_install 0|1>: the --settings JSON of a worker.
+# worker_settings <role> <dir> <run dir> <allow_install 0|1> [<state dir>]: the --settings JSON
+# of a worker (sandbox-check gives no state dir).
 #   hooks        worker-guard.sh and guard-push.sh before Bash, Edit and Write calls;
 #   permissions  Read denied on SECRET_PATHS;
 #   sandbox      Claude Code's OS sandbox (Seatbelt on macOS) around every Bash command and
@@ -366,11 +381,16 @@ registry_hosts() {
 #                tool caches; reads none of SECRET_PATHS; no network host (an install worker:
 #                its package registries, and the pnpm 12 store operation lock, which pnpm
 #                keeps in /tmp/pnpm-store-operation-locks-<uid>), localhost allowed (tests start servers); no
-#                unsandboxed retry, and no worker without the sandbox.
+#                unsandboxed retry, and no worker without the sandbox. Watchman gets a private
+#                XDG_STATE_HOME, ~/.local/state/waw/s.XXXXXX per run (short: watchman's socket
+#                path must stay under 104 bytes), and spawns no daemon (its macOS daemon starts
+#                through launchd, outside the sandbox). That root is outside every write list;
+#                only the run's own <state dir>/watchman is writable. ~/.local/state/watchman is
+#                not writable (its state file holds triggers).
 # AGENT_SANDBOX=off leaves the sandbox out, for debugging only: sandbox-check (and so
 # /auto-pilot) refuses then.
 worker_settings() {
-  local role=$1 wdir=$2 wout=$3 install=$4 p hosts=()
+  local role=$1 wdir=$2 wout=$3 install=$4 state=${5:-} p hosts=()
   local secrets=()
   for p in "${SECRET_PATHS[@]}"; do
     if [ "$install" = 1 ] && [ "$p" = "~/.npmrc" ]; then continue; fi
@@ -383,7 +403,7 @@ worker_settings() {
   fi
   jq -nc --arg g "$guard" --arg pg "$push_guard" --arg d "$wdir" --arg o "$wout" \
     --arg role "$role" --arg install "$install" --arg sb "${AGENT_SANDBOX:-on}" \
-    --arg hosts "${hosts[*]:-}" --arg uid "$(id -u)" '
+    --arg hosts "${hosts[*]:-}" --arg uid "$(id -u)" --arg state "$state" '
     ($ARGS.positional) as $sec
     | {hooks: {PreToolUse: [
         {matcher: "Bash", hooks: [{type: "command", command: $g}, {type: "command", command: $pg}]},
@@ -394,6 +414,7 @@ worker_settings() {
         enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
         filesystem: {
           allowWrite: ([$d, $o, "~/Library/Caches", "~/.cache"]
+            + (if $state == "" then [] else ["\($state)/watchman"] end)
             + (if $install == "1" then ["~/Library/pnpm", "~/.pnpm-store", "~/.npm",
                  "/private/tmp/pnpm-store-operation-locks-\($uid)"] else [] end)),
           denyRead: $sec},
@@ -472,9 +493,11 @@ codex_run_config() {
     hosts=(registry.npmjs.org)
     while IFS= read -r p; do [ -z "$p" ] || hosts+=("$p"); done < <(registry_hosts "$wdir")
   fi
-  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --arg uid "$(id -u)" --argjson extra "$extra" '
+  printf 'permissions.worker.filesystem=%s\n' "$(jq -nc --arg o "$wout" --arg install "$install" --arg uid "$(id -u)" --argjson extra "$extra" \
+    --arg state "$WORKER_STATE_HOME" '
     ($ARGS.positional | map({(.): "deny"}) | add // {}) as $deny
-    | {":root": "read", ":tmpdir": "write", ($o): "write", "~/Library/Caches": "write", "~/.cache": "write"}
+    | {":root": "read", ":tmpdir": "write", ($o): "write", "~/Library/Caches": "write", "~/.cache": "write",
+       "\($state)/watchman": "write"}
       + (if $install == "1" then {"~/Library/pnpm": "write", "~/.pnpm-store": "write", "~/.npm": "write",
            "/private/tmp/pnpm-store-operation-locks-\($uid)": "write"} else {} end)
       + $deny + ($extra | del(.[":workspace_roots"]))
@@ -482,8 +505,10 @@ codex_run_config() {
   printf 'permissions.worker.network=%s\n' "$(jq -nc --arg hosts "${hosts[*]:-}" '
     {enabled: true, allow_local_binding: true}
     + (($hosts | split(" ") | map(select(. != ""))) as $h | if ($h | length) > 0 then {domains: ($h | map({(.): "allow"}) | add)} else {} end)' | toml_table)"
-  printf 'shell_environment_policy=%s\n' "$(jq -nc --arg n "$AGENT_NAME_V" --arg r "$role" --arg s "$wdir" --arg o "$wout" --arg e "$wout/events.log" '
-    {inherit: "core", set: {AGENT_NAME: $n, AGENT_ROLE: $r, AGENT_SCOPE: $s, AGENT_RUN_DIR: $o, AGENT_EVENTS: $e}}' | toml_table)"
+  printf 'shell_environment_policy=%s\n' "$(jq -nc --arg n "$AGENT_NAME_V" --arg r "$role" --arg s "$wdir" --arg o "$wout" --arg e "$wout/events.log" \
+    --arg g "$WORKER_GITCONFIG" --arg x "$WORKER_STATE_HOME" '
+    {inherit: "core", set: {AGENT_NAME: $n, AGENT_ROLE: $r, AGENT_SCOPE: $s, AGENT_RUN_DIR: $o, AGENT_EVENTS: $e,
+      GIT_CONFIG_GLOBAL: $g, XDG_STATE_HOME: $x, WATCHMAN_NO_SPAWN: "1"}}' | toml_table)"
   # The developer's own skills (~/.agents/skills) stay out; the project's (.agents/skills) and the
   # route's ($CODEX_HOME/skills) are the worker's, as a Claude worker has its project's and its
   # route's. Codex has no switch for that one place, so each of its skills is turned off.
@@ -986,6 +1011,23 @@ if [ "$role" = tester ]; then
 fi
 mkdir -p "$out"
 out=$(cd "$out" && pwd -P)
+# --cwd and --out are writable by the worker: neither may overlap ~/.local/state (the workers'
+# state root, and the developer's own state). -ef, so another spelling of a path counts too.
+within() { # within <path> <dir>: <path> is <dir> or inside it
+  local p=$1
+  while :; do
+    if [ "$p" -ef "$2" ]; then return 0; fi
+    [ "$p" != / ] || return 1
+    p=$(dirname "$p")
+  done
+}
+mkdir -p "$HOME/.local/state" || die 3 "could not create $HOME/.local/state"
+user_state=$(cd "$HOME/.local/state" && pwd -P)
+for flag in cwd out; do
+  if [ "$flag" = cwd ]; then p=$dir; else p=$out; fi
+  ! within "$user_state" "$p" || die 2 "--$flag $p contains the workers' state root ~/.local/state: refused"
+  ! within "$p" "$user_state" || die 2 "--$flag $p is inside the workers' state root ~/.local/state: refused"
+done
 name=${name:-$role-$(date +%H%M%S)}
 [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die 2 "--name: letters, digits, . _ - (at most 64)"
 [ ! -e "$out/$name.jsonl" ] || die 2 "--name $name is taken in $out: give another"
@@ -995,6 +1037,26 @@ if [ "$runner" = codex ]; then session=${resume:-}; else session=${resume:-$(uui
 
 log=$out/$name.jsonl err=$out/$name.err result=$out/$name.result.json
 events=$out/events.log runfile=$out/$name.pid
+# the run's own XDG_STATE_HOME, in a root no sandbox can write: no worker can change another's
+state_root=$HOME/.local/state/waw
+mkdir -p "$state_root" || die 3 "could not create $state_root"
+# what killed runs left behind: staged reports, and state dirs whose owner (.owner) is gone
+find "$state_root" -maxdepth 1 -name 'r.*' -type f -mtime +0 -exec rm -f {} + 2>/dev/null || true
+{ find "$state_root" -maxdepth 1 -name 's.*' -type d -mtime +0 2>/dev/null || true; } |
+  while IFS= read -r d; do
+    owner=$(cat "$d/.owner" 2>/dev/null) || owner=''
+    if ! [[ $owner =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$d" 2>/dev/null || true
+    fi
+  done
+WORKER_STATE_HOME=$(mktemp -d "$state_root/s.XXXXXX") || die 3 "could not create a state dir in $state_root"
+# until the run's own EXIT trap (cleanup) takes over
+trap 'rm -rf "$WORKER_STATE_HOME"' EXIT
+printf '%s\n' "$$" >"$WORKER_STATE_HOME/.owner" || die 3 "could not write $WORKER_STATE_HOME/.owner"
+mkdir "$WORKER_STATE_HOME/watchman" || die 3 "could not create $WORKER_STATE_HOME/watchman"
+# Claude Code's version locks stay where the developer's updater looks, or it may remove a version in use
+claude_state=${XDG_STATE_HOME:-$HOME/.local/state}/claude
+mkdir -p "$claude_state" && ln -s "$claude_state" "$WORKER_STATE_HOME/claude" || die 3 "could not link $claude_state into $WORKER_STATE_HOME"
 cp "$brief" "$out/$name.brief.md"
 : >"$log"
 : >"$err"
@@ -1007,7 +1069,7 @@ common=$(cat "$HERE/roles/common.md")
   [ "$runner" != codex ] || cat "$HERE/roles/codex.md"; } >"$prompt"
 
 [ -x "$guard" ] && [ -x "$push_guard" ] || die 3 "missing $guard or $push_guard"
-hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install") || die 3 "could not build the worker settings"
+hooks=$(worker_settings "$role" "$dir" "$out" "$allow_install" "$WORKER_STATE_HOME") || die 3 "could not build the worker settings"
 
 # The OS sandbox confines Bash and its children; the file tools are held by worker-guard.sh
 # (physical path check) and the Read deny rules. bypassPermissions is used because those layers,
@@ -1055,9 +1117,19 @@ mkdir -p "$REGISTRY"
 entry=$REGISTRY/$$.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$$" "$queued_started" "$name" "$role" "$model" "$dir" "$log" "$out" >"$entry"
 : >"$runfile"
-lease='' lease_held=0 acq_pid='' seg_pid=''
+lease='' lease_held=0 acq_pid='' seg_pid='' stage=''
+# The report is built in a file of the state root, which no worker can write, and renamed onto
+# $result: $out is the worker's to write, and a link it plants there must not be followed.
+new_stage() { stage=$(mktemp "$state_root/r.XXXXXX") || die 3 "could not stage the report in $state_root"; }
+publish() { # rename $stage onto $result, replacing a link there, also one to a directory
+  chmod 644 "$stage"
+  if [ "$(uname -s)" = Darwin ]; then /bin/mv -fh "$stage" "$result"; else mv -fT "$stage" "$result"; fi
+  stage=''
+}
 cleanup() { # idempotent: runs from the traps and at exit; releases the lease if we still hold it
   rm -f "$entry" "$runfile" "$out/$name.queued"
+  [ -z "$stage" ] || rm -f "$stage"
+  rm -rf "$WORKER_STATE_HOME" 2>/dev/null || true # a leftover must not keep the slot
   if [ "$lease_held" = 1 ]; then
     python3 -I "$HERE/slots.py" release --state-dir "$STATE_DIR" --lease "$lease" \
       --owner-pid "$$" >/dev/null 2>&1 || true
@@ -1085,7 +1157,9 @@ trap on_signal INT TERM
 # slot_final <status> <run_status>: the report of a run that never started a model (a queue
 # timeout, or a stop that landed before admission): the result file and the normal last line.
 slot_final() {
-  jq -n --arg s "$2" '{run_status: $s}' >"$result"
+  new_stage
+  jq -n --arg s "$2" '{run_status: $s}' >"$stage"
+  publish
   printf '%s %s turns=0 time=%ss result=%s session=-\n' \
     "$name" "$1" "$(( $(date +%s) - queued_started ))" "$result"
 }
@@ -1193,11 +1267,13 @@ while :; do
     worker_env=() seen_names=""
     IFS=' ' read -r -a extra_names <<<"$WORKER_ENV_NAMES" || true
     for v in HOME USER LOGNAME SHELL PATH TMPDIR LANG LC_ALL LC_CTYPE LC_MESSAGES TERM TZ \
-      __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME \
+      __CF_USER_TEXT_ENCODING XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME \
       HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy \
       NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR ${extra_names[@]+"${extra_names[@]}"}; do
       [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
       case " $seen_names " in *" $v "*) continue ;; esac
+      # set below for every worker: the commander's own values never pass
+      case $v in GIT_CONFIG_GLOBAL | XDG_STATE_HOME | WATCHMAN_NO_SPAWN) continue ;; esac
       seen_names="$seen_names $v"
       if [ -z "${!v+x}" ]; then continue; fi
       # A proxy value with credentials (user:pass@host, with or without a scheme) passes only
@@ -1215,7 +1291,8 @@ while :; do
     worker_env+=(WAW_HOME="$AS_HOME" AGENT_ROLE="$role" AGENT_NAME="$name" AGENT_SCOPE="$dir"
       AGENT_RUN_DIR="$out" AGENT_EVENTS="$events" AGENT_ALLOW_INSTALL="$allow_install"
       AGENT_GRANTS="$grants" BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=1800000
-      MCP_TOOL_TIMEOUT=600000)
+      MCP_TOOL_TIMEOUT=600000
+      GIT_CONFIG_GLOBAL="$WORKER_GITCONFIG" XDG_STATE_HOME="$WORKER_STATE_HOME" WATCHMAN_NO_SPAWN=1)
     # A project's stop-time checks (CLAUDE_CHECKS, a project's stop-check hook) keep
     # a session working until the changed files are green: only a developer can act on that;
     # the others would spend their turns on it (and see other workers' unfinished changes).
@@ -1311,22 +1388,36 @@ if [ -n "$results" ]; then
       (map(.usage.cache_creation_input_tokens // 0) | add) ] | @tsv')
 fi
 [ "$runner" != codex ] || cost=sub
+new_stage
 if [ "$status" = ok ] && [ -n "$final" ] &&
   printf '%s' "$final" | jq -e '.structured_output | type == "object"' >/dev/null 2>&1; then
   # a Codex report fills the role schema's optional fields with null (strict schema): dropped
   printf '%s' "$final" | jq 'if $cx then .structured_output | walk(if type == "object" then with_entries(select(.value != null)) else . end) else .structured_output end' \
-    --argjson cx "$([ "$runner" = codex ] && echo true || echo false)" >"$result"
+    --argjson cx "$([ "$runner" = codex ] && echo true || echo false)" >"$stage"
+  # a tester that excludes checks accounts for every one that did not pass, each with its own
+  # exclusion of the same name and command; the schema cannot say so
+  if [ "$role" = tester ] && ! jq -e '[(.exclusions // [])[] | [.check, .command]] as $ex
+      | [(.checks // [])[] | select(.result != "pass") | [.name, .command]] as $np
+      | .status != "pass-with-exclusions" or (($ex | length) > 0
+        and all($np[]; . as $c
+          | ([$ex[] | select(. == $c)] | length) >= ([$np[] | select(. == $c)] | length)))' \
+      "$stage" >/dev/null 2>&1; then
+    checked=$(jq '. + {error: "pass-with-exclusions must list every check that did not pass in exclusions"}' "$stage")
+    printf '%s\n' "$checked" >"$stage"
+    status=failed
+  fi
 elif [ -n "$final" ] && [ "$status" != ok ]; then
   # Stopped or timed out after a segment finished: keep what that segment reported, marked.
-  printf '%s' "$final" | jq --arg s "$status" '(.structured_output // {}) + {run_status: $s}' >"$result"
+  printf '%s' "$final" | jq --arg s "$status" '(.structured_output // {}) + {run_status: $s}' >"$stage"
 elif [ -n "$final" ]; then
   status=failed
-  printf '%s' "$final" | jq '{error: ("no structured report: " + (.subtype // "unknown")), is_error, result}' >"$result"
+  printf '%s' "$final" | jq '{error: ("no structured report: " + (.subtype // "unknown")), is_error, result}' >"$stage"
 else
   [ "$status" != ok ] || status=failed
   last=$(grep '[^[:space:]]' "$err" 2>/dev/null | tail -n 1 | cut -c1-300 || true)
-  jq -n --arg why "worker ended without a result ($status, exit $rc)${last:+: $last}" '{error: $why}' >"$result"
+  jq -n --arg why "worker ended without a result ($status, exit $rc)${last:+: $last}" '{error: $why}' >"$stage"
 fi
+publish
 
 tsv=$out/runs.tsv
 [ -f "$tsv" ] || printf 'started\tname\tsession\trole\tmodel\tstatus\tturns\tseconds\tin_tokens\tout_tokens\tcost_estimate_usd\tuncached_in\tcache_read\tcache_write\n' >"$tsv"

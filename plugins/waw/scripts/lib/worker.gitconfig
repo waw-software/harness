@@ -1,0 +1,9 @@
+# GIT_CONFIG_GLOBAL of waw workers (agent.sh): nothing from the developer's global config;
+# no signing, since ~/.ssh and gpg are closed in the sandbox
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[user]
+	name = waw worker
+	email = worker@waw.invalid
