@@ -86,7 +86,8 @@ From each script's header; `<script> --help` is not needed.
     smoke.sh [--keep]
 
 Exits: `agent.sh` 0 report, 2 usage, 3 config, 4 failed, 5 timed out, 6 stopped, 7
-slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer; `task.sh` 0, 2, 3, 5 limit;
+slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer, 5 review/security coverage partial
+(answered); `task.sh` 0, 2, 3, 5 limit;
 `deliver.sh` 0, 1 git/forge failed, 2 usage, 3 refused; `stage.sh` 0, 2, 3; `smoke.sh` 0,
 1 check failed, 3 setup.
 

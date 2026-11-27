@@ -164,7 +164,12 @@ Start the tester and the review at the same time; they only read the code.
    and in a risky zone also `--role security` (to `<dir>/security.md`). A risky zone:
    authentication or authorization, secrets, money, input from outside the system, deleting
    or migrating data, or a path the project lists as risky. Exit 3 or 4: no reviewer
-   answered; say so in the report.
+   answered; say so in the report. Exit 5: the reviewer saw only part of its input (the
+   coverage line names what was left out: diff files, the task or a rules file). Triage what
+   it found, run it once more with `--max-bytes` raised to cover what the coverage line names,
+   or with codex first, and if it stays partial write
+   "review: partial (<provider>)" in the report. The output starts with
+   trying/waiting/skipped lines; the answer follows the line that starts with `provider: `.
 3. **Triage.** Check every reviewer finding and every tester bug against the code yourself.
    Real: a small exact fix yourself, or a fix brief to the developer of that slice (resume
    it) with the finding, where, and the fix; commit after checking. Fix only real bugs; a

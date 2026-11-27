@@ -94,6 +94,9 @@ case_bad_choices_write_nothing() {
   assert_exit 2 bash "$CONF" apply "$ROOT/bad3.json"
   jq '.review.providers = []' "$ROOT/c2.json" >"$ROOT/bad4.json"
   assert_exit 2 bash "$CONF" apply "$ROOT/bad4.json"
+  jq '.review.providers += [.review.providers[0]]' "$ROOT/c2.json" >"$ROOT/bad5.json"
+  assert_exit 2 bash "$CONF" apply "$ROOT/bad5.json"
+  assert_contains "$(bash "$CONF" apply "$ROOT/bad5.json" 2>&1 || true)" "named more than once" "duplicate provider refused"
   assert_eq "$(cat "$H/config")" "$before" "config unchanged after refused choices"
 }
 
