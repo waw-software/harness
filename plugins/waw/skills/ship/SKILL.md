@@ -15,9 +15,13 @@ decide, brief the workers, check what they deliver and deliver it. You do not wr
 read your plan before the work and your report after it, and they merge.
 
 As the first thing in each of the seven steps below, run
-`stage.sh <step>` with the step's name (`workspace`, `understand`,
-`ask`, `plan`, `build`, `verify`, `deliver`), and `stage.sh done`
+`stage.sh <step> --task <slug>` with the step's name (`workspace`, `understand`,
+`ask`, `plan`, `build`, `verify`, `deliver`). In step 1, pick the slug first (1.1) and run
+`stage.sh workspace --task <slug>` right after it. Run `stage.sh done --task <slug>`
 after the report. `/task-cost` shows the time and the cost of each step from these marks.
+Around every wait for the developer (each `AskUserQuestion`, the plan stop), run
+`stage.sh wait <reason> --task <slug>` before it and `stage.sh resume --task <slug>` after
+the answer.
 
 Workers run with `agent.sh run ... --out <dir>/agents`, in the background, at most 5 at a
 time; briefs go to `<dir>/briefs/<name>.md`. Names: `inv-1`, `plan-review-1`, `dev-<slice>`,
@@ -99,7 +103,9 @@ One task is one branch in one worktree, shared by all its workers.
 Ask the developer only what is theirs to decide (the decisions rule, `rules/waw/decisions.md`), in one
 `AskUserQuestion` call: the investigator's open questions that are of that kind, and yours.
 Never ask what the notes or the task already answer. Nothing of that kind is open: ask
-nothing. Decide the rest yourself and keep one line per decision.
+nothing. Decide the rest yourself and keep one line per decision. Run
+`stage.sh wait ask --task <slug>` right before the `AskUserQuestion` call, and
+`stage.sh resume --task <slug>` right after the answer.
 
 ## 4. Plan
 
@@ -127,7 +133,9 @@ more than 400 changed lines of code): split it into pull requests that each ship
 themselves, write them as a checklist into one issue (`gh issue create`), and plan the
 first only. `/ship #N` takes the next unchecked one.
 
-Then stop and wait for "ok" or corrections. This is the only planned stop.
+Then run `stage.sh wait plan --task <slug>`, stop and wait for "ok" or corrections. When
+the developer answers, run `stage.sh resume --task <slug>` first. This is the only planned
+stop.
 
 ## 5. Build
 

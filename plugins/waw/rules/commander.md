@@ -10,7 +10,7 @@ budget (`--budget` does not apply, `--timeout` does), and `agent.sh report` show
 `sub`. When a project's permission rules are ones Codex cannot follow, `agent.sh` says so and
 runs that role on its fallback route.
 The scripts of this setup (`agent.sh`, `attack.sh`, `task.sh`, `deliver.sh`, `stage.sh`,
-`smoke.sh`) come from the waw plugin and are on the PATH of your Bash tool: call
+`retro.sh`, `smoke.sh`) come from the waw plugin and are on the PATH of your Bash tool: call
 them by name. The result is still yours:
 a worker's mistake that reaches the developer is your mistake.
 
@@ -82,14 +82,15 @@ From each script's header; `<script> --help` is not needed.
     task.sh deps [<dir>] [--force] [--base <commit>] | limit start <dir> [--minutes N] | limit check <dir>
     deliver.sh check | push [--force-with-lease] | commit --message-file <file> <path>...
     deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>] [--label <label>]...
-    stage.sh <stage> | report [--session <id>]
+    stage.sh <stage>|wait [<reason>]|resume|report [--task <slug>] [--session <id>]
+    retro.sh [--since <date>] [--until <date>] [--project <name>] [--task <slug>] [--ledger <file>]
     smoke.sh [--keep]
 
 Exits: `agent.sh` 0 report, 2 usage, 3 config, 4 failed, 5 timed out, 6 stopped, 7
 slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer, 5 review/security coverage partial
 (answered); `task.sh` 0, 2, 3, 5 limit;
-`deliver.sh` 0, 1 git/forge failed, 2 usage, 3 refused; `stage.sh` 0, 2, 3; `smoke.sh` 0,
-1 check failed, 3 setup.
+`deliver.sh` 0, 1 git/forge failed, 2 usage, 3 refused; `stage.sh` 0, 2, 3; `retro.sh` 0,
+2, 3; `smoke.sh` 0, 1 check failed, 3 setup.
 
 ## Running workers
 

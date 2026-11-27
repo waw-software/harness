@@ -6,8 +6,10 @@ disable-model-invocation: true
 
 # task-cost
 
-1. Run `stage.sh report`: this session (the commander), its stages,
-   time and cost.
+1. Run `stage.sh report --task <slug>`: this session (the commander), the stages of the
+   task, their time and cost. With no task marked in this session, run `stage.sh report`
+   without `--task`. The cost is priced from the transcript of the session; TIME excludes
+   the marked waits for the developer, which the WAIT column shows.
 2. When the task has run files with workers (`.ship/<slug>/agents/runs.tsv` in the current
    worktree), also run `agent.sh report .ship/<slug>/agents`: runs,
    failures, fix runs (`-fix<n>`), steering messages, turns, minutes and tokens per role and
@@ -29,3 +31,6 @@ or a worker that failed or was re-run many times.
 
 The stages are the steps of `/ship` and `/auto-pilot`, which mark them as they go. In a
 session without them the report has the totals only.
+
+For past runs, use `/retro`: it reads the ledger in the waw home (`state/ledger.jsonl`),
+which survives deleted workspaces.

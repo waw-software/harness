@@ -14,8 +14,9 @@ code.
 | `/auto-pilot <task>` | `/ship` without you: a decider model answers the questions, with a time limit. |
 | `/brainstorm <idea>` | Talk an idea through before any code. |
 | `/task-cost` | The time and cost of each stage, and what the workers used. |
+| `/retro` | What past runs cost and where they went wrong, from the ledger in the waw home. |
 | Hooks | A push guard (no merges, no force pushes, no pushes to the default branch), worktrees in `~/worktrees/<repo>/<name>`, and a short note at session start (models, routes). |
-| `bin/` | `agent.sh`, `attack.sh`, `task.sh`, `deliver.sh`, `stage.sh`, `smoke.sh` and `configure.sh` on the PATH of the Bash tool. |
+| `bin/` | `agent.sh`, `attack.sh`, `task.sh`, `deliver.sh`, `stage.sh`, `retro.sh`, `smoke.sh` and `configure.sh` on the PATH of the Bash tool. |
 | Rules | The commander rules, git delivery for GitHub and GitLab, and optionally the decisions wizard and Jira tickets. `/configure` copies them into `<config>/rules/waw/` (a plugin cannot ship a CLAUDE.md, and Claude Code skips rule files that are links); the session-start hook keeps the copies current, so do not edit them there. |
 
 ## Install
