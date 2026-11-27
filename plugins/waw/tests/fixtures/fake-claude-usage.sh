@@ -7,6 +7,7 @@
 #                     cache_creation{ephemeral_5m_input_tokens,ephemeral_1h_input_tokens}
 #                     in it for the cache tiers
 #   FAKE_TOTAL_COST   the result's total_cost_usd (default 0)
+#   FAKE_MESSAGE_MODEL  optional: the assistant line's message.model (default: none)
 # FAKE_CLAUDE_USAGE_MODE:
 #   ok (default)  one assistant line (message.id m<start>, the usage), then the result
 #   first-hangs   the first start hangs without a result; later starts act as ok
@@ -30,9 +31,9 @@ event() { # event <type> <worker name> <text>: a line in the form of agent.sh's 
 }
 
 ok() {
-  jq -nc --arg id "m$start" --argjson u "$usage" \
-    '{type: "assistant", message: {id: $id, content: [{type: "text", text: "fake claude step"}],
-      usage: $u}}'
+  jq -nc --arg id "m$start" --argjson u "$usage" --arg m "${FAKE_MESSAGE_MODEL:-}" \
+    '{type: "assistant", message: ({id: $id, content: [{type: "text", text: "fake claude step"}],
+      usage: $u} + (if $m == "" then {} else {model: $m} end))}'
   jq -nc --argjson u "$usage" --argjson c "${FAKE_TOTAL_COST:-0}" \
     '{type: "result", subtype: "success", is_error: false, num_turns: 1, usage: $u,
       total_cost_usd: $c, structured_output: {status: "done", summary: "x"}}'

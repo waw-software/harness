@@ -11,7 +11,7 @@ ROOT=$TEST_ROOT/ledger-run
 LEDGER=$AGENT_STATE_DIR/ledger.jsonl
 REPO=$ROOT/myrepo
 OUT=$REPO/.ship/s1/agents
-export AGENT_WORKER_ENV="TEST_ROOT FAKE_CLAUDE_USAGE_MODE FAKE_USAGE_JSON FAKE_TOTAL_COST"
+export AGENT_WORKER_ENV="TEST_ROOT FAKE_CLAUDE_USAGE_MODE FAKE_USAGE_JSON FAKE_TOTAL_COST FAKE_MESSAGE_MODEL"
 export AGENT_PRICES=$TEST_ROOT/prices.tsv
 printf 'test-investigator-model\t1\t2\t0.1\t1.25\t2\n' >"$AGENT_PRICES"
 cp "$TESTS_DIR/fixtures/fake-claude-usage.sh" "$TEST_ROOT/bin/claude"
@@ -102,6 +102,50 @@ case_steer_interrupted_segment() {
     and .cost_incomplete == true and .tokens.uncached_in == 70 and .tokens.out == 7'
 }
 
+case_alias_priced_from_stream() {
+  { grep -v '^AGENT_INVESTIGATOR_MODEL=' "$WAW_CONFIG"
+    printf 'AGENT_INVESTIGATOR_MODEL="sonnet"\n'; } >"$ROOT/config-alias"
+  WAW_CONFIG=$ROOT/config-alias FAKE_MESSAGE_MODEL=claude-sonnet-5-5 \
+    FAKE_USAGE_JSON='{"input_tokens":1000,"output_tokens":100}' \
+    run_agent inv-al || fail "inv-al: $(cat "$ROOT/inv-al.err")"
+  # the claude-sonnet-5-5 row of the plugin's defaults: input 2, output 10
+  assert_record run inv-al '.model == "sonnet" and .cost_basis == "tokens" and .cost_usd != null
+    and ((.cost_usd - (1000*2 + 100*10) / 1000000) | fabs) < 1e-12'
+}
+
+# The first segment writes only to the 1h cache and gives no result; the second writes only to
+# the 5m cache, and its result does not split the cache writes: its answers do.
+case_tiers_per_segment() {
+  cat >"$TEST_ROOT/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 143' TERM INT
+answer() { # answer <id> <5m> <1h>
+  printf '{"type":"assistant","message":{"id":"%s","content":[],"usage":{"cache_creation_input_tokens":%s,"cache_creation":{"ephemeral_5m_input_tokens":%s,"ephemeral_1h_input_tokens":%s}}}}\n' \
+    "$1" "$(($2 + $3))" "$2" "$3"
+}
+if [ ! -e "$TEST_ROOT/tiers-first" ]; then
+  answer t1 0 500
+  : >"$TEST_ROOT/tiers-first"
+  sleep 300 & wait "$!"
+  exit 0
+fi
+answer t2 300 0
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{"cache_creation_input_tokens":300},"total_cost_usd":0,"structured_output":{"status":"done","summary":"x"}}'
+EOF
+  run_agent inv-t &
+  local pid=$! n=0
+  while [ ! -e "$TEST_ROOT/tiers-first" ]; do
+    n=$((n + 1)); [ "$n" -le 250 ] || fail "inv-t never started: $(cat "$ROOT/inv-t.err")"
+    sleep 0.1
+  done
+  bash "$AGENT" steer inv-t 'go on' >/dev/null || fail "steer"
+  assert_exit 0 wait "$pid"
+  cp "$TESTS_DIR/fixtures/fake-claude-usage.sh" "$TEST_ROOT/bin/claude"
+  assert_record run inv-t '.segments == 2 and .results == 1 and .tokens.cache_write == 300
+    and .tokens.cache_write_5m == 300 and .tokens.cache_write_1h == 0
+    and ((.cost_usd - 300 * 1.25 / 1000000) | fabs) < 1e-12'
+}
+
 case_concurrent_runs_and_marks() {
   local i pids=''
   for i in 1 2 3; do run_agent "inv-p$i" & pids="$pids $!"; done
@@ -123,4 +167,6 @@ case_resume_not_cumulative
 case_three_resumes
 case_cache_tiers
 case_steer_interrupted_segment
+case_alias_priced_from_stream
+case_tiers_per_segment
 case_concurrent_runs_and_marks

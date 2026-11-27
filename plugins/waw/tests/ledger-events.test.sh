@@ -82,6 +82,27 @@ case_interrupt_keeps_pending_event() {
   done
 }
 
+case_approval_timeout_recorded() {
+  local out=$ROOT/timeout-out pid n=0
+  FAKE_CLAUDE_USAGE_MODE=events-hang bash "$AGENT" run --role investigator \
+    --brief "$ROOT/brief.md" --out "$out" --cwd "$ROOT/dir" --name inv-t --quiet \
+    >"$ROOT/inv-t.log" 2>"$ROOT/inv-t.err" &
+  pid=$!
+  while ! grep -q ' APPROVAL inv-t: ' "$out/events.log" 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -le 150 ] || fail "inv-t wrote no events: $(cat "$ROOT/inv-t.err" 2>&1)"
+    sleep 0.1
+  done
+  # as lib/approvals.mjs writes it
+  printf '%s APPROVAL-TIMEOUT inv-t: a1: denied\n' "$(date +%H:%M:%S)" >>"$out/events.log"
+  kill -TERM "$pid"
+  assert_exit 130 wait "$pid"
+  rm -rf "$out"
+  assert_eq "$(count '.kind == "event" and .name == "inv-t" and .type == "APPROVAL-TIMEOUT"
+    and .text == "a1: denied"')" 1 "APPROVAL-TIMEOUT records"
+}
+
 case_events_survive_interruption
 case_events_not_duplicated
 case_interrupt_keeps_pending_event
+case_approval_timeout_recorded

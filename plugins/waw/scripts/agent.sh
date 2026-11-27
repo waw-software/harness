@@ -572,8 +572,9 @@ emit() {
 }
 
 # forward_events <events file> <after line> <to line> <name>: the ledger records of the events
-# of this worker that others wrote there (ask.sh, approve-mcp.mjs): QUESTION, QUESTION-TIMEOUT,
-# APPROVAL. A line gives the time of day only: later than now, it is yesterday's.
+# of this worker that others wrote there (ask.sh, lib/approvals.mjs): QUESTION, QUESTION-TIMEOUT,
+# APPROVAL, APPROVAL-TIMEOUT. A line gives the time of day only: later than now, it is
+# yesterday's.
 forward_events() {
   local etime type text today now off day yesterday
   while IFS=$'\t' read -r etime type text; do
@@ -587,7 +588,8 @@ forward_events() {
     ledger_event "${day}T$etime$off" "$type" "$4" "$text"
   done < <(sed -n "$(($2 + 1)),${3}p" "$1" | awk -v n="$4:" '
     $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $3 == n &&
-      ($2 == "QUESTION" || $2 == "QUESTION-TIMEOUT" || $2 == "APPROVAL") {
+      ($2 == "QUESTION" || $2 == "QUESTION-TIMEOUT" || $2 == "APPROVAL" ||
+       $2 == "APPROVAL-TIMEOUT") {
       head = $1 " " $2 " " $3 " "
       if (index($0, head) == 1) printf "%s\t%s\t%s\n", $1, $2, substr($0, length(head) + 1)
     }')
@@ -595,20 +597,39 @@ forward_events() {
 
 # run_usage: this run's turns, tokens and cost as JSON, from its own result lines: their usage
 # is per run, their total_cost_usd is cumulative over the session, so only the last one is
-# kept (cost_cc). The 1h share of the cache writes comes from the results' cache_creation, else
-# from the run's answers (the last line of each message id), else it is all 5m.
+# kept (cost_cc). The 1h share of the cache writes is told per segment (SEG_AT: the log's line
+# count at each segment's start), for the segments with a result: from the result's
+# cache_creation, else from that segment's answers (the last line of each message id), else it
+# is all 5m. A model configured as an alias is priced as the claude-* id its answers name.
 run_usage() {
-  jq -Rnc --arg price "$(price_any "$model")" --arg runner "$runner" '
+  local priced=$model id
+  case $model in
+    sonnet | opus | haiku | fable)
+      id=$(jq -Rnr '[inputs | fromjson? | objects | select(.type == "assistant") | .message.model
+        | strings | select(startswith("claude-"))] | last // empty' "$log")
+      [ -z "$id" ] || priced=$id
+      ;;
+  esac
+  jq -Rnc --arg price "$(price_any "$priced")" --arg runner "$runner" --arg at "${SEG_AT:-}" '
     def total(f): map(f // 0) | add // 0;
-    [inputs | fromjson? | objects] as $lines
-    | [$lines[] | select(.type == "result")] as $r
-    | (reduce ($lines[] | select(.type == "assistant" and .message.id != null and .message.usage != null))
-         as $a ({}; .[$a.message.id] = $a.message.usage) | [.[]]) as $answers
+    def parsed: [.[] | fromjson? | objects];
+    def results: [.[] | select(.type == "result")];
+    # the 1h cache writes of one segment, from its lines
+    def segment_1h: results as $r
+      | (reduce (.[] | select(.type == "assistant" and .message.id != null and .message.usage != null))
+           as $a ({}; .[$a.message.id] = $a.message.usage) | [.[]]) as $answers
+      | ($r | total(.usage.cache_creation_input_tokens)) as $cw
+      | if ($r | length) == 0 then 0
+        elif any($r[]; .usage.cache_creation != null)
+        then $r | total(.usage.cache_creation.ephemeral_1h_input_tokens)
+        else $answers | total(.cache_creation.ephemeral_1h_input_tokens) end
+      | if . > $cw then $cw else . end;
+    [inputs] as $raw
+    | ([$at | split(" ")[] | select(. != "") | tonumber] | if . == [] then [0] else . end) as $s
+    | ($raw | parsed | results) as $r
     | ($r | total(.usage.cache_creation_input_tokens)) as $cw
-    | (if any($r[]; .usage.cache_creation != null)
-       then $r | total(.usage.cache_creation.ephemeral_1h_input_tokens)
-       else $answers | total(.cache_creation.ephemeral_1h_input_tokens) end
-       | if . > $cw then $cw else . end) as $cw1h
+    | ([range($s | length) as $i | $raw[$s[$i]:($s[$i + 1] // ($raw | length))]
+        | parsed | segment_1h] | add // 0) as $cw1h
     | {uncached_in: ($r | total(.usage.input_tokens)),
        cache_read: ($r | total(.usage.cache_read_input_tokens)),
        cache_write: $cw, cache_write_5m: ($cw - $cw1h), cache_write_1h: $cw1h,
@@ -1347,7 +1368,7 @@ case $out in
   *) L_TASK=$(basename "$out") ;;
 esac
 EV_START=$(wc -l <"$events" | tr -d ' ')
-FINAL_WRITTEN=0 seg=0
+FINAL_WRITTEN=0 seg=0 SEG_AT=''
 RUN_ID=$(uuidgen | tr 'A-Z' 'a-z')
 ledger_run run-start
 
@@ -1381,6 +1402,7 @@ while :; do
     # steering a Codex worker that ended before it reported its session: nothing to resume
     break
   fi
+  SEG_AT="$SEG_AT $(wc -l <"$log" | tr -d ' ')"
   ready=$out/$name.ready-$seg
   rm -f "$ready"
   (
