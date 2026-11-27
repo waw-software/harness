@@ -187,8 +187,10 @@ Start the tester and the review at the same time; they only read the code.
 You deliver, without asking: write the report to `<dir>/mr.md`, then
 `deliver.sh mr --title "<title>" --description-file <dir>/mr.md`
 pushes the branch and opens the pull/merge request (GitLab or GitHub) with the report as
-its body; later pushes: `deliver.sh push`. It refuses protected branches and never forces:
-a refusal goes to the developer as it is. Its title follows the commits, not the branch name: the type the commits have
+its body; later pushes: `deliver.sh push`. It refuses protected branches, and the one force
+form (`deliver.sh push --force-with-lease` after a rebase) follows the lease rule in
+git-delivery.md. A refusal goes to the developer as it is.
+Its title follows the commits, not the branch name: the type the commits have
 (`fix` when they fix, whatever the type in the branch name says), with the ticket as the scope
 when the branch names one, for example `fix(PROJ-456): ...`; a project rule for titles
 wins. Then watch it, without asking whether to: watching is part of delivering. Watch until

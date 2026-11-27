@@ -65,6 +65,31 @@ Never: run project code on the host: tests, builds, lint, package scripts, the p
 hooks. A tester runs them in the sandbox. The plugin's own scripts and `bash tests/run.sh`
 of the waw plugin source are not project code.
 
+## Script calls
+
+From each script's header; `<script> --help` is not needed.
+
+    agent.sh run --role <role> --brief <file> --out <dir> [--cwd <dir>] [--name <id>] \
+      [--resume <session-id>] [--budget <usd>] [--timeout <minutes>] [--allow-install] \
+      [--grant <glob>]... [--quiet]
+    agent.sh answer <name> [<qid>] <text...> | approve <name> [<aid>] [<note...>] | deny <name> [<aid>] <reason...>
+    agent.sh steer <name> <text...> | stop <name> | events <run dir> | questions [<run dir>] | approvals [<run dir>]
+    agent.sh ps | log <name|file.jsonl> [-f] | count | models | report <dir> | sandbox-check
+    attack.sh --role review|security [--task <file>] [--base <ref>] [--repo <dir>] [--max-bytes <n>]
+    attack.sh --role decide --question <file> [--task <file>]
+    attack.sh --check-config
+    task.sh open <slug> [--branch <branch>] [--prompt-file <file>] | prepare <slug> | dir <slug> | clean
+    task.sh deps [<dir>] [--force] [--base <commit>] | limit start <dir> [--minutes N] | limit check <dir>
+    deliver.sh check | push [--force-with-lease] | commit --message-file <file> <path>...
+    deliver.sh mr --title <title> --description-file <file> [--draft] [--target <branch>] [--label <label>]...
+    stage.sh <stage> | report [--session <id>]
+    smoke.sh [--keep]
+
+Exits: `agent.sh` 0 report, 2 usage, 3 config, 4 failed, 5 timed out, 6 stopped, 7
+slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer; `task.sh` 0, 2, 3, 5 limit;
+`deliver.sh` 0, 1 git/forge failed, 2 usage, 3 refused; `stage.sh` 0, 2, 3; `smoke.sh` 0,
+1 check failed, 3 setup.
+
 ## Running workers
 
     agent.sh run --role <role> --cwd <worktree> \
@@ -201,7 +226,8 @@ that worktree. Run git as plain, separate commands from the worktree root, one p
   them as they are;
 - push and open merge/pull requests only with `deliver.sh` (`push`,
   `mr ...`): the developer allowed it without a prompt for task branches; it refuses
-  protected branches and force pushes. Its refusal is final.
+  protected branches and any force but `deliver.sh push --force-with-lease`, under the lease
+  rule in git-delivery.md. Its refusal is final.
 
 When git is refused with "too complex to verify", split the command; never look for a form
 that slips past the check.
