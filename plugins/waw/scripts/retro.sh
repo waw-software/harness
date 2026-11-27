@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     shift
     continue
   fi
-  [ $# -ge 2 ] && [ -n "$2" ] || usage
+  [ $# -ge 2 ] && [ -n "$2" ] && [[ $2 != --* ]] || usage
   case $1 in
     --since) is_day "$2" || usage; since=$2 ;;
     --until) is_day "$2" || usage; until_day=$2 ;;

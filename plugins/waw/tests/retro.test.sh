@@ -213,6 +213,12 @@ case_smoke_excluded() {
   case $out in
     *'smoke runs'*) fail "a smoke line with a project filter: $out" ;;
   esac
+  # the filter keeps the smoke records, so only the filter itself can drop the line
+  out=$(bash "$RETRO" --project agentic-smoke.Ab12Cd --ledger "$d/ledger.jsonl" --since 2026-03-01 \
+    --until 2026-03-31) || fail "retro failed"
+  case $out in
+    *'smoke runs'*) fail "a smoke line with the smoke project as filter: $out" ;;
+  esac
 }
 
 # the hook prefix goes before the cut, so the reason stays
@@ -228,12 +234,39 @@ case_blocked_prefix_stripped() {
     "prefix removed, cut at 100, no trailing space"
 }
 
-# retro_in <dir> <args>: retro.sh called in that directory, over the two-project ledger
+# retro_in <dir> <args>: retro.sh called in that directory, over the two-project ledger of
+# case_project_from_dir, or over $RETRO_IN_LEDGER
 retro_in() {
   local dir=$1
   shift
-  (cd "$dir" && bash "$RETRO" --ledger "$TEST_ROOT/retro-proj/ledger.jsonl" --since 2026-03-01 \
-    --until 2026-03-31 "$@" | tr -s ' ')
+  (cd "$dir" && bash "$RETRO" --ledger "${RETRO_IN_LEDGER:-$TEST_ROOT/retro-proj/ledger.jsonl}" \
+    --since 2026-03-01 --until 2026-03-31 "$@" | tr -s ' ')
+}
+
+# CLAUDE.md only at the repository root, retro called below it and from a linked worktree
+case_project_from_repo_root() {
+  local d=$TEST_ROOT/retro-root out dir
+  local head='retro: 2026-03-01 .. 2026-03-31, project rootproj (from CLAUDE.md; all projects: --all)'
+  local RETRO_IN_LEDGER=$d/ledger.jsonl
+  mkdir -p "$d"
+  git init -q "$d/rootproj" || fail "git init failed"
+  : >"$d/rootproj/CLAUDE.md"
+  git -C "$d/rootproj" add CLAUDE.md || fail "git add failed"
+  git -C "$d/rootproj" -c user.name=t -c user.email=t@t commit -q -m init || fail "git commit failed"
+  git -C "$d/rootproj" worktree add -q ../rootproj-wt || fail "git worktree add failed"
+  mkdir -p "$d/rootproj/sub/deeper"
+  {
+    run_rec run 2026-03-05T10:00:00+0000 g1 dev-a developer m1 a \
+      "$(done_rec ok 60 1 0 0.50 false | jq -c '.project = "rootproj"')"
+    run_rec run 2026-03-05T10:10:00+0000 g2 dev-a developer m2 a \
+      "$(done_rec ok 60 1 0 0.25 false | jq -c '.project = "other"')"
+  } >"$d/ledger.jsonl"
+  for dir in rootproj/sub/deeper rootproj-wt; do
+    out=$(retro_in "$d/$dir") || fail "retro failed in $dir"
+    has_line "$out" "$head" "$dir: header"
+    has_line "$out" 'developer | m1 1 0 0 0 0 1 1.0 $0.50 0' "$dir: the repository's run"
+    no_row "$out" 'developer | m2' "$dir: another project's run"
+  done
 }
 
 case_project_from_dir() {
@@ -267,6 +300,9 @@ case_project_and_all_usage() {
   bash "$RETRO" --ledger "$LEDGER" --all >/dev/null || fail "--all alone is not usage"
   assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --project proj --all
   assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --all --project proj
+  # an option is not another option's value
+  assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --project --all
+  assert_exit 2 bash "$RETRO" --ledger "$LEDGER" --task --all
 }
 
 case_period
@@ -284,5 +320,6 @@ case_open_stage_exact
 case_smoke_excluded
 case_blocked_prefix_stripped
 case_project_from_dir
+case_project_from_repo_root
 case_project_and_all_usage
-printf 'retro.test.sh: all sixteen cases passed\n'
+printf 'retro.test.sh: all seventeen cases passed\n'
