@@ -5,6 +5,10 @@ they deliver and opens the pull request. **Workers** are separate, sandboxed Cla
 Codex sessions, each role on the model and route you pick. A model of another family reviews the
 code.
 
+Documentation: [Skills](../../docs/en/SKILLS.md) (each command step by step) and the
+[Plugin overview](../../docs/en/PLUGIN_OVERVIEW.md) (how it works in detail). Українською:
+[Скіли](../../docs/uk/SKILLS.md), [Огляд плагіна](../../docs/uk/PLUGIN_OVERVIEW.md).
+
 ## What you get
 
 | Part | What it does |
@@ -152,7 +156,6 @@ To test the plugin without touching your own `~/.claude`, use
   whose rules it cannot follow sends the role to its fallback route. Skills: the project's
   (`.agents/skills`) and the route's (`<route dir>/skills`), not your own `~/.agents/skills`
   and not Codex's bundled ones. A Claude Code worker likewise gets its project's skills and
-  its route dir's `skills/`. Design and spike notes:
-  `docs/plans/2026-11-22-codex-runner.md` in the repository.
+  its route dir's `skills/`.
 
 The opencode CLI serves code review and decisions only.
