@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  waw:
+    name: waw tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS: the developer's platform (/bin/bash 3.2, Seatbelt); Linux: bash 5, bubblewrap.
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          bash --version | head -n 1
+          jq --version
+          python3 --version
+          git --version
+      - name: bash tests/run.sh
+        working-directory: plugins/waw
+        run: bash tests/run.sh
