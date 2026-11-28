@@ -80,8 +80,8 @@ _ledger_warn() { printf 'ledger: %s\n' "$*" >&2; }
 # _ledger_stale <lock dir>: true when it is older than 10 s.
 _ledger_stale() {
   local m
-  # BSD stat, else GNU stat
-  m=$(stat -f %m "$1" 2>/dev/null) || m=$(stat -c %Y "$1" 2>/dev/null) || return 1
+  # GNU stat, else BSD stat (GNU reads -f as "file system" and succeeds with other output)
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=$(stat -f %m "$1" 2>/dev/null) || return 1
   [[ $m =~ ^[0-9]+$ ]] || return 1
   [ $(($(date +%s) - m)) -gt 10 ]
 }
