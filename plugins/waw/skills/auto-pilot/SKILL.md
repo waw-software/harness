@@ -17,7 +17,7 @@ differences:
   nobody watches the workers, so the run does not start.
 - **Workspace** (step 1): the first line of `<dir>/prompt.md` names
   `${CLAUDE_PLUGIN_ROOT}/skills/auto-pilot/SKILL.md` in place of the ship skill.
-- **Limit**: in the workspace run `task.sh limit start <dir>` (240
+- **Limit**: in the workspace run `task.sh limit start <dir>` (500
   minutes; an existing deadline stays). Run `task.sh limit check <dir>`
   before the plan, before each build wave, before the verification and before the pull
   request. Exit 5 or 3: stop starting workers, let running ones finish, commit what is
@@ -33,7 +33,9 @@ differences:
   developer's. Exit 3 or 4: take your own recommendations. `attack.sh` never exits 5 for
   decide. Do not wait for "ok".
 - **Stops**: in place of each stop, one more decision by the same call. A step that could do
-  harm is never taken: do the rest and list it under `Left for you`. A tester still `blocked`
+  harm is never taken: do the rest and list it under `Left for you`. Host runs (the commander
+  rules) are not such a step: run them as in /ship, after reading the diff; one whose diff
+  reaches outside the test is not run and goes under `Left for you`. A tester still `blocked`
   after the second run is not a decision: no push and no pull request; list it under
   `Left for you`.
 - **Report**: it starts with `Decided without you`: every question, the decision, who took it

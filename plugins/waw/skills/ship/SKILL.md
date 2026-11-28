@@ -77,8 +77,8 @@ One task is one branch in one worktree, shared by all its workers.
    - **S**: at most 2 files and ~50 changed lines, no risky zone (step 6), and every
      acceptance criterion provable by one command or one screen. No investigator: you locate
      the code with Explore and write the plan yourself. One developer, the review once. A
-     tester always: a short brief to run the proving command (never on the host yourself),
-     its output kept in `<dir>/evidence/`.
+     tester always: a short brief to run the proving command (on the host yourself only when
+     it is a host run, the commander rules), its output kept in `<dir>/evidence/`.
    - **L**: more than two slices, or a risky zone. The full flow below, with the plan review.
    - **M**: everything else. The flow below, without the plan review.
 
@@ -167,6 +167,11 @@ Start the tester and the review at the same time; they only read the code.
    running product (the platform's skill when the project has one; a web app in a
    browser; an API with requests). It reports per criterion, with evidence, the bugs,
    what it could not run, and the e2e proposal.
+   **Host runs** (the investigator's `checks.host_runs`, or a tester `blocked` with
+   `needs host: <command>`): before the tester, run each yourself as the commander rules say
+   (the diff read first, the evidence file `<dir>/evidence/host-<n>-<name>.txt`), and name
+   each file in the tester's brief as a check it reads and does not run again. A tester
+   `blocked` only on `needs host` is not a stop: run those, then the tester again.
 2. **Review by another model.** In the worktree run in the background, stdout to
    `<dir>/review.md`: `attack.sh --role review --task <dir>/task.md`,
    and in a risky zone also `--role security` (to `<dir>/security.md`). A risky zone:
@@ -242,6 +247,8 @@ The report, in the pull request and in the chat:
    `<dir>/agents/*.approvals.log`), granted in the plan or approved during the run, and why.
 7. **Edited by the commander**: each small exact fix you made yourself (file, what, why);
    leave the heading out when there is none.
+8. **Run on the host**: each host run (the command, why no sandbox could run it, its
+   evidence file, its exit code); leave the heading out when there is none.
 
 Then `Decided myself` (one line each), `Review` (who reviewed, what was fixed, what was
 declined and why; the AI reviewer of CI is listed here too, with each finding's verdict),

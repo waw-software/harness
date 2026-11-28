@@ -46,7 +46,7 @@ case_apply() {
   assert_eq "$(jq -r '.apiKeyHelper' "$H/workers/gw/settings.json")" "/usr/bin/security find-generic-password -s gw-key -w" "key helper"
   assert_eq "$(jq -r '.env.ANTHROPIC_DEFAULT_HAIKU_MODEL' "$H/workers/gw/settings.json")" "GPT 6.1 Sol (trusted)" "route default model"
   assert_eq "$(jq -r '.env // "none"' "$H/workers/anthropic/settings.json")" "none" "anthropic route has no endpoint"
-  assert_eq "$(stat -f %Lp "$H/workers/gw/settings.json" 2>/dev/null || stat -c %a "$H/workers/gw/settings.json")" "600" "route settings private"
+  assert_eq "$(stat -c %a "$H/workers/gw/settings.json" 2>/dev/null || stat -f %Lp "$H/workers/gw/settings.json")" "600" "route settings private"
   for r in commander git-delivery decisions jira-tickets; do
     [ -f "$CFG/rules/waw/$r.md" ] && [ ! -L "$CFG/rules/waw/$r.md" ] || fail "rule $r not copied"
     cmp -s "$CFG/rules/waw/$r.md" "$SETUP_UNDER_TEST/../rules/$r.md" || fail "rule $r differs"
