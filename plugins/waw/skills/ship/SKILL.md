@@ -94,7 +94,12 @@ One task is one branch in one worktree, shared by all its workers.
    the project is checked (full check, unit tests, lint, e2e and which specs touch the
    area), the open questions with options and a recommendation, and a draft plan
    (`plan`: acceptance criteria and slices with owned files, interfaces, tests first,
-   steps). Ask it for the project's `AGENTS.md` / `CLAUDE.md` rules that bear on the task.
+   steps). Ask it for the project's `AGENTS.md` / `CLAUDE.md` rules that bear on the task,
+   and for what in the code the change builds on (earlier pull requests, shared modules) can
+   make an acceptance criterion false, each with `file:line` and whether this task fixes it.
+   In a risky zone (step 6) also the threats: for each input from outside, secret or
+   permission the change touches or builds on, how it can be abused (a hostile server or
+   client, an oversized or malformed input, a race, a timeout) and what the plan does about it.
 3. **Check it.** Open the `file:line` of each finding the plan rests on. A claim that does
    not hold: resume the investigator with the correction.
 
@@ -114,7 +119,11 @@ nothing. Decide the rest yourself and keep one line per decision. Run
 2. Check the slices yourself: no file in two slices; shared files owned by one slice; each
    slice at most ~300 changed lines; interfaces given where slices meet; every acceptance
    criterion has a proof. Size L (more than two slices or a risky zone): also run a reviewer
-   on the plan (`plan-review-1`, brief: the task, the plan file, "review this plan").
+   on the plan (`plan-review-1`, brief: the task, the plan file, "review this plan"). In a
+   risky zone its brief also asks for a security review of the plan, with the investigator's
+   threats: what an attacker or a hostile input can still do to the code the plan changes
+   or builds on, and which criterion that breaks. What it finds is settled before the plan
+   is shown: changed in the plan, or a question for the developer in the plan.
 3. Show the plan in the chat, half a page at most:
    - **Size**: S, M or L, and what that leaves out (for S: no investigator; a tester always runs the proving command).
    - **Will do**: how the product behaves after the change, in the developer's terms.
@@ -187,7 +196,11 @@ Start the tester and the review at the same time; they only read the code.
    Real: a small exact fix yourself, or a fix brief to the developer of that slice (resume
    it) with the finding, where, and the fix; commit after checking. Fix only real bugs; a
    test-quality nit is declined unless cheap, and then batched into one brief. Not real:
-   decline it with a one-line reason. Then run the tester again for the affected criteria
+   decline it with a one-line reason. A real finding that makes one of this task's
+   acceptance criteria false, or defeats what a slice adds, is fixed in this task, also when
+   the code lies in a file of an earlier pull request: it is part of making the criterion
+   true. Only a finding outside this task's criteria becomes a new item (a checklist item or
+   an issue), named in the report. Then run the tester again for the affected criteria
    and the full check. **One review round per task**: review again only when the first
    round found a blocker. What is still open goes into the report as it is.
 4. **Proof is complete** only when every criterion is proven by an e2e spec that asserts it

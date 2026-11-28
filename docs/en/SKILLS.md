@@ -146,11 +146,13 @@ its time and cost.
 2. **Understand.** It sizes the task: **S** (at most 2 files and ~50 lines, no risky zone),
    **M**, or **L** (more than two slices, or a risky zone). It gathers the context (issue,
    Jira, connectors) into `.ship/<slug>/context/`. For M and L an `investigator` reports how
-   the code works today, the risks, how the project is checked, open questions and a draft
+   the code works today, the risks, what in the code underneath can break the criteria (in
+   a risky zone also the threats), how the project is checked, open questions and a draft
    plan; the commander checks the findings the plan rests on.
 3. **Ask, once.** One round of questions, only those that are yours. Nothing open: no
    questions.
-4. **Plan.** For L, a `reviewer` worker reviews the plan first. You see half a page: the
+4. **Plan.** For L, a `reviewer` worker reviews the plan first (in a risky zone also for
+   security, so such questions reach you with the plan, not after the pull request). You see half a page: the
    size, what it will do, what it will not do, the proof for each acceptance criterion, the
    slices, the guarded files it will change, what it decided itself, and the risk (in a
    risky zone). It waits for your "ok" or corrections. Work too big for one readable pull
@@ -164,7 +166,8 @@ its time and cost.
    the same time a model of another family reviews the code (`attack.sh --role review`,
    output in `.ship/<slug>/review.md`; in a risky zone also a security review). The commander
    checks every finding and every bug against the code; real ones are fixed, the rest are
-   declined with a reason. Documents the change made false are corrected.
+   declined with a reason. A finding that breaks a criterion of this task is fixed here,
+   even in code of an earlier pull request; only findings outside it become new items. Documents the change made false are corrected.
 7. **Deliver.** It writes the report to `.ship/<slug>/mr.md`, pushes the branch and opens the
    pull request (GitHub) or merge request (GitLab) with `deliver.sh mr`. It watches CI to the
    end. A red job goes to a developer worker (two rounds at most). Comments of an AI reviewer
