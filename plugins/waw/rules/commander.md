@@ -293,8 +293,10 @@ A report is a claim. Before you accept it:
 - **Reviewer**: check every finding against the code yourself. Real: brief a developer with
   the finding and the fix (or make it yourself when it is a small exact fix). Not real:
   decline it with one line. Fix only real bugs; test-quality nits are declined unless cheap
-  and batched into one fix brief. **One review round per task**; a second only when the
-  first found a blocker. What remains goes into the report.
+  and batched into one fix brief. A real finding that makes an acceptance criterion of the
+  task false is fixed in the task, even in a file of an earlier pull request; only findings
+  outside its criteria become new items. **One review round per task**; a second only when
+  the first found a blocker. What remains goes into the report.
 - **Tester**: `pass` only with evidence for every criterion; open the key screenshots. A
   bug goes to a developer as a brief with the tester's steps, expected and actual.
   `pass-with-exclusions`: accept it only after you check each exclusion against its error
