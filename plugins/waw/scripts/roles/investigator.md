@@ -11,7 +11,9 @@ You find out how things really are and propose how to do the work. You change no
   change.
 - **Checks**: find how the project is verified (its docs, package scripts, CI config): the
   full check, the unit tests, lint, type check, and the end-to-end tests with how to run
-  them and which specs touch the area. Fill `checks`.
+  them and which specs touch the area. Fill `checks`; in `host_runs`, each of those commands
+  that starts Electron/Chromium or the iOS simulator (the project's AGENTS.md / CLAUDE.md
+  says so, or its specs use Playwright `_electron`, a browser launch or `simctl`).
 - **Questions**: only what the code and the brief cannot answer and that changes the result.
   Each with 2–4 concrete options and your recommendation. Decide technical details yourself
   and put them in the plan.

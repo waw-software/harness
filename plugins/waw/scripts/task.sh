@@ -41,7 +41,7 @@
 #       is done: its pull request is merged (gh), or its upstream branch is gone. Never the
 #       main checkout, never the worktree the command runs in. Prints "removed <path>" each.
 #       The run files the task left in the main checkout (.ship/<worktree folder>) go with it.
-#   task.sh limit start <dir> [--minutes N]    write <dir>/deadline (default 240 minutes);
+#   task.sh limit start <dir> [--minutes N]    write <dir>/deadline (default 500 minutes);
 #                                              never overwrites one
 #   task.sh limit check <dir>                  exit 0 with the minutes left, 5 past the
 #                                              deadline, 3 when <dir>/deadline is missing or
@@ -381,7 +381,7 @@ do_deps() {
 }
 
 do_limit() {
-  local cmd=${1:-} dir=${2:-} minutes=240 file deadline now
+  local cmd=${1:-} dir=${2:-} minutes=500 file deadline now
   [ $# -ge 2 ] || usage
   shift 2
   file="$dir/deadline"

@@ -32,7 +32,12 @@
         "full_check": { "type": "string" },
         "unit_tests": { "type": "string" },
         "e2e": { "type": "string" },
-        "relevant_e2e_specs": { "type": "array", "items": { "type": "string" } }
+        "relevant_e2e_specs": { "type": "array", "items": { "type": "string" } },
+        "host_runs": {
+          "type": "array",
+          "description": "the check commands that start Electron/Chromium or the iOS simulator (no worker sandbox can): the commander runs them on the host",
+          "items": { "type": "string" }
+        }
       }
     },
     "open_questions": {

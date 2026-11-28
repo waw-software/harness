@@ -5,14 +5,14 @@
     "status": { "type": "string", "enum": ["pass", "pass-with-exclusions", "fail", "blocked"] },
     "exclusions": {
       "type": "array",
-      "description": "for pass-with-exclusions: the checks that fail for a reason outside the change",
+      "description": "for pass-with-exclusions: every check that is not pass (fail or not_run), each for a reason outside the change",
       "items": {
         "type": "object",
         "required": ["check", "command", "reason"],
         "properties": {
           "check": { "type": "string", "description": "the name used in checks" },
           "command": { "type": "string" },
-          "reason": { "type": "string", "description": "the exact error line and why it is the environment, not the change" },
+          "reason": { "type": "string", "description": "the exact error line (not_run: why it could not run) and why it is the environment, not the change" },
           "evidence": { "type": "array", "items": { "type": "string" } }
         }
       }
@@ -27,7 +27,7 @@
           "name": { "type": "string" },
           "command": { "type": "string" },
           "result": { "type": "string", "enum": ["pass", "fail", "not_run"] },
-          "note": { "type": "string", "description": "for a failure: the failing test and the key error lines" }
+          "note": { "type": "string", "description": "for a failure: the failing test and the key error lines; for a host run: host run: <evidence file>" }
         }
       }
     },

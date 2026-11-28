@@ -64,6 +64,25 @@ the review round.
 Never: run project code on the host: tests, builds, lint, package scripts, the project's git
 hooks. A tester runs them in the sandbox. The plugin's own scripts and `bash tests/run.sh`
 of the waw plugin source are not project code.
+**Host runs**, the one exception (allowed by the developer, under `/auto-pilot` too): a
+project command that must start Electron/Chromium or the iOS simulator, typically an
+end-to-end or visual-capture run. No worker sandbox can start them: Chromium's
+`bootstrap_check_in` needs Seatbelt `mach-register`, which neither Claude Code's sandbox
+(only `allowMachLookup`) nor Codex's allows, and `simctl` reaches no simulator from it.
+A command is a host run when the investigator's `checks` mark it as one (from the project's
+AGENTS.md / CLAUDE.md, or its Playwright `_electron` / `simctl` use), or when a tester
+reports `blocked` with `needs host: <command>`. Then:
+1. read the full diff of the branch against its base first (`git diff <base>...HEAD`), and
+   any file it runs that the diff does not show; anything that reaches outside the test
+   (network beyond localhost, keys, home files, a download): do not run it, it is a finding;
+2. run exactly that command from the worktree root, in the background, nothing chained to it
+   but the exit code (`; echo "exit=$?"`), its output in
+   `.ship/<slug>/evidence/host-<n>-<name>.txt`, which starts with the command line and the
+   device or UDID when there is one; then append, in a separate call, the processes it left
+   behind (`pgrep -fl <app>`; none is the expected line);
+3. a tester checks that evidence (its brief names each host-run file) and runs everything
+   else in the sandbox. List each host run in the report under "Run on the host".
+Every other project command still goes to a tester.
 
 ## Script calls
 
@@ -157,7 +176,9 @@ slot-timeout; `attack.sh` 0, 2, 3, 4 no valid answer, 5 review/security coverage
   permitted", a blocked host) is a BLOCKED: if the step is needed and safe (a cache dir, a
   host the build must reach), add the narrowest exception to `worker_settings` in
   the plugin's source (`scripts/agent.sh`), run its tests and `smoke.sh`, update the plugin,
-  tell the developer in one line; never steer the worker around it. `AGENT_SANDBOX=off` is for debugging only.
+  tell the developer in one line; never steer the worker around it. Electron/Chromium or the
+  simulator refused (`bootstrap_check_in`, `mach-register`, `simctl`): no exception can
+  help; it is a host run (above). `AGENT_SANDBOX=off` is for debugging only.
 - A tester is refused (exit 2) while a developer works in the same `--cwd`: wait for it.
 - **Setup changes and Claude Code updates**: the setup is the waw plugin. Change it
   in its source repository, run its tests there (`bash tests/run.sh`), then update the
